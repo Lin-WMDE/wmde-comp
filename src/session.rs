@@ -73,7 +73,7 @@ pub fn get_env(common: &Common) -> Result<HashMap<String, String>> {
 }
 
 pub fn setup_socket() -> Result<()> {
-    if let Ok(fd_num) = std::env::var("COSMIC_SESSION_SOCK")
+    if let Ok(fd_num) = std::env::var("WMDE_SESSION_SOCK")
         && let Ok(fd) = fd_num.parse::<RawFd>()
     {
         let res = unsafe { set_cloexec(fd) }.with_context(|| "Failed to setup session socket");
@@ -87,7 +87,7 @@ pub fn setup_socket() -> Result<()> {
 }
 
 pub fn run_socket(handle: LoopHandle<State>, common: &Common) -> Result<()> {
-    if let Ok(fd_num) = std::env::var("COSMIC_SESSION_SOCK") {
+    if let Ok(fd_num) = std::env::var("WMDE_SESSION_SOCK") {
         if let Ok(fd) = fd_num.parse::<RawFd>() {
             let mut session_socket = unsafe { UnixStream::from_raw_fd(fd) };
 
@@ -138,7 +138,7 @@ pub fn run_socket(handle: LoopHandle<State>, common: &Common) -> Result<()> {
                             Ok(message) => {
                                 match serde_json::from_str::<'_, Message>(message) {
                                     Ok(Message::SetEnv { .. }) => warn!("Got SetEnv from session? What is this?"),
-                                    _ => warn!("Unknown session socket message, are you using incompatible cosmic-session and cosmic-comp versions?"),
+                                    _ => warn!("Unknown session socket message, are you using incompatible wmde-session and wmde-comp versions?"),
                                 };
                                 Ok(PostAction::Continue)
                             },
@@ -153,7 +153,7 @@ pub fn run_socket(handle: LoopHandle<State>, common: &Common) -> Result<()> {
                 },
             ).with_context(|| "Failed to init the cosmic session socket source")?;
         } else {
-            error!(socket = fd_num, "COSMIC_SESSION_SOCK is no valid RawFd.");
+            error!(socket = fd_num, "WMDE_SESSION_SOCK is no valid RawFd.");
         }
     };
 

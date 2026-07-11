@@ -2,7 +2,7 @@
 authors = ["Victoria Brekenfeld"]
 edition = "2024"
 license = "GPL-3.0-only"
-name = "cosmic-comp"
+name = "wmde-comp"
 version = "1.0.0"
 rust-version = "1.90"
 
@@ -137,6 +137,37 @@ inherits = "release"
 
 [profile.release]
 lto = "fat"
+
+# Build libcosmic/cosmic-config/cosmic-theme/iced from the local WMDE forks so the
+# renamed config-root and fun.wmde.* ids resolve consistently across the whole stack.
+[patch."https://github.com/pop-os/libcosmic"]
+libcosmic = { path = "../libcosmic" }
+cosmic-config = { path = "../libcosmic/cosmic-config" }
+cosmic-config-derive = { path = "../libcosmic/cosmic-config-derive" }
+cosmic-theme = { path = "../libcosmic/cosmic-theme" }
+iced = { path = "../libcosmic/iced" }
+iced_accessibility = { path = "../libcosmic/iced/accessibility" }
+iced_core = { path = "../libcosmic/iced/core" }
+iced_debug = { path = "../libcosmic/iced/debug" }
+iced_futures = { path = "../libcosmic/iced/futures" }
+iced_graphics = { path = "../libcosmic/iced/graphics" }
+iced_program = { path = "../libcosmic/iced/program" }
+iced_renderer = { path = "../libcosmic/iced/renderer" }
+iced_runtime = { path = "../libcosmic/iced/runtime" }
+iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
+iced_wgpu = { path = "../libcosmic/iced/wgpu" }
+iced_widget = { path = "../libcosmic/iced/widget" }
+iced_winit = { path = "../libcosmic/iced/winit" }
+
+# cosmic-comp-config pins cosmic-config from the trailing-slash URL variant; patch it too.
+[patch."https://github.com/pop-os/libcosmic/"]
+cosmic-config = { path = "../libcosmic/cosmic-config" }
+
+# Shortcuts/WindowRules config crates come from the wmde-settings-daemon fork (original
+# crate names/dirs kept). This is how wmde-comp reads the fun.wmde.Settings.* ids in lockstep.
+[patch."https://github.com/pop-os/cosmic-settings-daemon"]
+cosmic-settings-config = { path = "../wmde-settings-daemon/config" }
+cosmic-settings-daemon-config = { path = "../wmde-settings-daemon/cosmic-settings-daemon-config" }
 
 [patch."https://github.com/pop-os/cosmic-protocols"]
 cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }

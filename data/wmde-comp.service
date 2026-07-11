@@ -1,0 +1,12 @@
+[Unit]
+Description=WMDE wayland compositor
+BindsTo=wmde-session.target
+Wants=wmde-session-pre.target
+After=wmde-session-pre.target
+Before=wmde-session.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/wmde-comp
+Restart=never
+ExecStopPost=/usr/bin/systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY

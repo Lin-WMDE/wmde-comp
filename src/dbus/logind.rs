@@ -12,7 +12,7 @@ pub fn inhibit_lid(common: &Common) -> Result<OwnedFd> {
         manager
             .inhibit(
                 HandleLidSwitch,
-                "cosmic-comp",
+                "wmde-comp",
                 "External output connected",
                 "block",
             )

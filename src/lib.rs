@@ -129,7 +129,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
             }
             Some("--version") | Some("-V") => {
                 println!(
-                    "cosmic-comp {} (git commit {})",
+                    "wmde-comp {} (git commit {})",
                     env!("CARGO_PKG_VERSION"),
                     git_hash
                 );
@@ -248,17 +248,17 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
 
 fn print_help(version: &str, git_rev: &str) {
     println!(
-        r#"cosmic-comp {version} (git commit {git_rev})
-System76 <info@system76.com>
+        r#"wmde-comp {version} (git commit {git_rev})
+WMDE <https://wmde.fun> (fork of cosmic-comp by System76 <info@system76.com>)
 
-Designed for the COSMIC™ desktop environment, cosmic-comp is a Wayland Compositor.
+wmde-comp is a Wayland Compositor, forked from cosmic-comp of the COSMIC™ desktop environment.
 
-Project home page: https://github.com/pop-os/cosmic-comp
+Project home page: https://github.com/Lin-WMDE/wmde-comp
 
 Options:
   -h, --help          Show this message
   --no-xwayland       Run without Xwayland
-  -v, --version       Show the version of cosmic-comp"#
+  -v, --version       Show the version of wmde-comp"#
     );
 }
 

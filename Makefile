@@ -4,7 +4,7 @@ bindir = $(prefix)/bin
 libdir = $(prefix)/lib
 sharedir = $(prefix)/share
 
-BINARY = cosmic-comp
+BINARY = wmde-comp
 CARGO_TARGET_DIR ?= target
 TARGET = debug
 DEBUG ?= 0
@@ -23,8 +23,8 @@ endif
 
 TARGET_BIN="$(DESTDIR)$(bindir)/$(BINARY)"
 
-KEYBINDINGS_CONF="$(DESTDIR)$(sharedir)/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
-TILING_EXCEPTIONS_CONF="$(DESTDIR)$(sharedir)/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
+KEYBINDINGS_CONF="$(DESTDIR)$(sharedir)/cosmic/fun.wmde.Settings.Shortcuts/v1/defaults"
+TILING_EXCEPTIONS_CONF="$(DESTDIR)$(sharedir)/cosmic/fun.wmde.Settings.WindowRules/v1/tiling_exception_defaults"
 
 all: extract-vendor
 	cargo build $(ARGS)
@@ -48,20 +48,16 @@ ifeq ($(VENDOR),1)
 	rm -rf vendor; tar pxf vendor.tar
 endif
 
+# wmde-comp ships ONLY the binary, its unit, and the default schemas.
+# The wayland-session .desktop, wmde-session[-pre].target and the session
+# helper script are owned exclusively by wmde-session (no install-bare-session
+# target here) to avoid file conflicts between the two wmde-* packages.
 install:
 	install -Dm0755 "$(CARGO_TARGET_DIR)/$(TARGET)/$(BINARY)" "$(TARGET_BIN)"
 	install -Dm0644 "data/keybindings.ron" "$(KEYBINDINGS_CONF)"
 	install -Dm0644 "data/tiling-exceptions.ron" "$(TILING_EXCEPTIONS_CONF)"
-
-install-bare-session: install
-	install -Dm0644 "data/cosmic.desktop" "$(DESTDIR)$(sharedir)/wayland-sessions/cosmic.desktop"
-	install -Dm0644 "data/cosmic-session.target" "$(DESTDIR)$(libdir)/systemd/user/cosmic-session.target"
-	install -Dm0644 "data/cosmic-session-pre.target" "$(DESTDIR)$(libdir)/systemd/user/cosmic-session-pre.target"
-	install -Dm0644 "data/cosmic-comp.service" "$(DESTDIR)$(libdir)/systemd/user/cosmic-comp.service"
-	install -Dm0755 "data/cosmic-service" "$(DESTDIR)/$(bindir)/cosmic-service"
+	install -Dm0644 "data/wmde-comp.service" "$(DESTDIR)$(libdir)/systemd/user/wmde-comp.service"
 
 uninstall:
-	rm "$(TARGET_BIN)" "$(KEYBINDINGS_CONF)"
-
-uninstall-bare-session:
-	rm "$(DESTDIR)$(sharedir)/wayland-sessions/cosmic.desktop"
+	rm "$(TARGET_BIN)" "$(KEYBINDINGS_CONF)" "$(TILING_EXCEPTIONS_CONF)"
+	rm "$(DESTDIR)$(libdir)/systemd/user/wmde-comp.service"

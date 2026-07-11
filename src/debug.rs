@@ -101,7 +101,7 @@ pub fn fps_ui(
                 .anchor(egui::Align2::LEFT_TOP, (10.0, 10.0))
                 .show(ctx, |ui| {
                     ui.label(format!(
-                        "cosmic-comp version {}",
+                        "wmde-comp version {}",
                         std::env!("CARGO_PKG_VERSION")
                     ));
                     if let Some(hash) = std::option_env!("GIT_HASH").and_then(|x| x.get(0..10)) {
