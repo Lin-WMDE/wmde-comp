@@ -39,7 +39,7 @@ i18n-embed = { version = "0.16", features = [
     "desktop-requester",
 ] }
 i18n-embed-fl = "0.10"
-iced_tiny_skia = { git = "https://github.com/pop-os/libcosmic" }
+iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
 indexmap = "2.13"
 keyframe = "1.1.1"
 libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false }
