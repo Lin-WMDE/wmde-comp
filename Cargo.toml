@@ -17,7 +17,7 @@ cosmic-comp-config = { path = "cosmic-comp-config", features = [
     "libdisplay-info",
     "output",
 ] }
-cosmic-config = { git = "https://github.com/pop-os/libcosmic", features = [
+cosmic-config = { path = "../libcosmic/cosmic-config", features = [
     "calloop",
     "macro",
 ] }
@@ -42,7 +42,7 @@ i18n-embed-fl = "0.10"
 iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
 indexmap = "2.13"
 keyframe = "1.1.1"
-libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false }
+libcosmic = { path = "../libcosmic", default-features = false }
 libsystemd = { version = "0.7", optional = true }
 log-panics = { version = "2", features = ["with-backtrace"] }
 ordered-float = "5.1"
