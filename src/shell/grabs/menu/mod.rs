@@ -432,6 +432,7 @@ impl Program for ContextMenu {
                                     color.alpha *= 0.5;
                                     TextStyle {
                                         color: Some(color.into()),
+                                        ..Default::default()
                                     }
                                 })
                             } else {
@@ -450,6 +451,7 @@ impl Program for ContextMenu {
                                     color.alpha *= 0.75;
                                     TextStyle {
                                         color: Some(color.into()),
+                                        ..Default::default()
                                     }
                                 }))
                                 .into(),
