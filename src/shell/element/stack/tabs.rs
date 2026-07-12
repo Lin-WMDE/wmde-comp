@@ -379,8 +379,8 @@ where
                 >= MIN_ACTIVE_TAB_WIDTH
             {
                 // just use a flex layout
-                cosmic::iced_core::layout::flex::resolve(
-                    cosmic::iced_core::layout::flex::Axis::Horizontal,
+                cosmic::iced::core::layout::flex::resolve(
+                    cosmic::iced::core::layout::flex::Axis::Horizontal,
                     renderer,
                     &limits,
                     self.width,

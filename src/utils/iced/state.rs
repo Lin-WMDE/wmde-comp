@@ -4,7 +4,7 @@ use cosmic::iced::core::mouse;
 use cosmic::iced::core::renderer;
 use cosmic::iced::core::widget::operation::{self, Operation};
 use cosmic::iced::core::{Clipboard, Size};
-use cosmic::iced_core;
+use cosmic::iced::core;
 use cosmic::iced_runtime::Task;
 use cosmic::iced_runtime::user_interface::{self, UserInterface};
 

@@ -289,8 +289,8 @@ where
             .min_height(size.height)
             .width(size.width)
             .height(size.height);
-        cosmic::iced_core::layout::flex::resolve(
-            cosmic::iced_core::layout::flex::Axis::Horizontal,
+        cosmic::iced::core::layout::flex::resolve(
+            cosmic::iced::core::layout::flex::Axis::Horizontal,
             renderer,
             &limits,
             Length::Fill,
