@@ -27,9 +27,9 @@ use calloop::LoopHandle;
 use cosmic::{
     Apply, Element as CosmicElement, Theme,
     iced::{Alignment, id::Id, widget as iced_widget},
-    iced_core::{Background, Border, Color, Length, border::Radius},
-    iced_runtime::Task,
-    iced_widget::scrollable::AbsoluteOffset,
+    iced::core::{Background, Border, Color, Length, border::Radius},
+    iced::runtime::Task,
+    iced::widget::scrollable::AbsoluteOffset,
     theme, widget as cosmic_widget,
 };
 use cosmic_comp_config::AppearanceConfig;

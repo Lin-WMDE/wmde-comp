@@ -10,7 +10,7 @@ use cosmic::{
         Alignment,
         widget::{container, row},
     },
-    iced_core::{Background, Border, Color, Length},
+    iced::core::{Background, Border, Color, Length},
     theme,
     widget::{icon::from_name, space, text},
 };

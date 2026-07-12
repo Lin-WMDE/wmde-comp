@@ -2,7 +2,7 @@ use super::tab::{MIN_ACTIVE_TAB_WIDTH, Tab, TabBackgroundTheme, TabMessage, TabR
 use cosmic::{
     Apply,
     iced::{Element, id::Id, widget},
-    iced_core::{
+    iced::core::{
         Background, Border, Clipboard, Color, Length, Point, Rectangle, Renderer, Shell, Size,
         Vector, event,
         layout::{Layout, Limits, Node},
@@ -16,7 +16,7 @@ use cosmic::{
             tree::{self, Tree},
         },
     },
-    iced_widget::container::draw_background,
+    iced::widget::container::draw_background,
     theme,
     widget::{container::Catalog, icon::from_name},
 };

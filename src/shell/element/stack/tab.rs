@@ -5,14 +5,14 @@ use cosmic::{
         Background,
         widget::{self, container::draw_background, rule::FillMode},
     },
-    iced_core::{
+    iced::core::{
         Border, Clipboard, Color, Length, Rectangle, Shell, Size, alignment, event,
         layout::{Layout, Limits, Node},
         mouse, overlay, renderer,
         text::{Ellipsize, EllipsizeHeightLimit, Shaping, Wrapping},
         widget::{Id, Widget, operation::Operation, tree::Tree},
     },
-    iced_widget::scrollable::AbsoluteOffset,
+    iced::widget::scrollable::AbsoluteOffset,
     theme,
     widget::{Icon, icon::from_name, text},
 };

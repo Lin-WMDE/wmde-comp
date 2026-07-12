@@ -19,8 +19,8 @@ use cosmic::{
         touch::{Event as TouchEvent, Finger},
         window::Event as WindowEvent,
     },
-    iced_core::{Color, Length, Pixels, clipboard::Null as NullClipboard, id::Id, renderer::Style},
-    iced_runtime::{Action, task::into_stream},
+    iced::core::{Color, Length, Pixels, clipboard::Null as NullClipboard, id::Id, renderer::Style},
+    iced::runtime::{Action, task::into_stream},
 };
 use iced_tiny_skia::{
     Layer,

@@ -10,8 +10,8 @@ use calloop::LoopHandle;
 use cosmic::{
     Apply as _, Task,
     iced::{Alignment, Background},
-    iced_core::{Border, Length, Rectangle as IcedRectangle, alignment::Horizontal},
-    iced_widget::{self, Column, Row, text::Style as TextStyle},
+    iced::core::{Border, Length, Rectangle as IcedRectangle, alignment::Horizontal},
+    iced::widget::{self as iced_widget, Column, Row, text::Style as TextStyle},
     theme,
     widget::{button, divider, icon::from_name, space, text},
 };

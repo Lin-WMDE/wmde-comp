@@ -4,7 +4,7 @@ use calloop::LoopHandle;
 use cosmic::{
     Apply,
     iced::{Alignment, Background, Border, Length, alignment::Vertical},
-    iced_widget, theme,
+    iced::widget as iced_widget, theme,
     widget::{self, icon::Named},
 };
 use cosmic_comp_config::ZoomMovement;

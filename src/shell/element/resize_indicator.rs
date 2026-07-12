@@ -14,7 +14,7 @@ use cosmic::{
         Alignment,
         widget::{column, container, row, space},
     },
-    iced_core::{Background, Border, Color, Length},
+    iced::core::{Background, Border, Color, Length},
     theme,
     widget::{icon::from_name, text},
 };

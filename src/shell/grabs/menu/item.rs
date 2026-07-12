@@ -1,6 +1,6 @@
 use cosmic::{
     iced::Element,
-    iced_core::{
+    iced::core::{
         Background, Border, Clipboard, Color, Event, Layout, Length, Rectangle,
         Renderer as IcedRenderer, Shell, Size, layout, mouse, overlay,
         renderer::{Quad, Style},
