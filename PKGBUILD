@@ -8,7 +8,7 @@
 # entry, the wmde-session[-pre].target or the session helper - wmde-session owns those.
 pkgname=wmde-comp
 pkgver=1.2.0
-pkgrel=2
+pkgrel=3
 pkgdesc="WMDE wayland compositor (fork of cosmic-comp) - reads the fun.wmde.Comp config"
 arch=('x86_64')
 url="https://wmde.fun"
