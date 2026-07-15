@@ -21,6 +21,9 @@ depends=('glibc' 'gcc-libs' 'wayland' 'libinput' 'libxkbcommon' 'libglvnd'
 makedepends=('rust' 'cargo' 'git' 'make' 'clang' 'lld' 'pkgconf' 'wayland-protocols')
 optdepends=('xorg-xwayland: X11 application support'
             'wmde-session: full WMDE session wiring')
+# NOTE: Cargo.toml uses path deps to sibling checkouts (../libcosmic,
+# ../wmde-settings-daemon). The build harness arranges them next to $srcdir;
+# a standalone makepkg run without that layout will fail dependency resolution.
 source=("$pkgname::git+https://github.com/Lin-WMDE/wmde-comp.git#branch=wmde")
 sha256sums=('SKIP')
 
@@ -40,7 +43,7 @@ build() {
 package() {
   cd "$srcdir/$pkgname"
   # installs /usr/bin/wmde-comp, /usr/lib/systemd/user/wmde-comp.service and the default
-  # schemas under /usr/share/cosmic/fun.wmde.Settings.{Shortcuts,WindowRules}/v1/ .
+  # schemas under /usr/share/wmde/fun.wmde.Settings.{Shortcuts,WindowRules}/v1/ .
   # NO install-bare-session target - wmde-session is the sole owner of the session files.
   make DESTDIR="$pkgdir" prefix=/usr install
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

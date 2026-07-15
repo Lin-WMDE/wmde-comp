@@ -21,6 +21,8 @@
 	(appid: "Com.github.amezin.ddterm", titles: [".*"]),
 	(appid: "Com.github.donadigo.eddy", titles: [".*"]),
 	(appid: "fun.wmde.files.dialog", titles: [".*"]),
+	(appid: "com.system76.CosmicFilesDialog", titles: [".*"]),
+	(appid: "com.system76.CosmicStoreDialog", titles: [".*"]),
 	(appid: "Enpass", titles: ["Enpass Assistant"]),
 	(appid: "Gjs", titles: ["Settings"]),
 	(appid: "Gnome-initial-setup", titles: [".*"]),

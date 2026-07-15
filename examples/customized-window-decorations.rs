@@ -1,11 +1,11 @@
 use cosmic::iced::{Color, Rectangle, Size};
 use cosmic::widget;
 use cosmic::widget::canvas;
-use cosmic_comp::hooks::{Decorations, Hooks};
-use cosmic_comp::shell::element::stack::{
+use wmde_comp::hooks::{Decorations, Hooks};
+use wmde_comp::shell::element::stack::{
     DefaultDecorations as DefaultStackDecorations, TAB_HEIGHT,
 };
-use cosmic_comp::shell::element::window::{
+use wmde_comp::shell::element::window::{
     DefaultDecorations as DefaultWindowDecorations, SSD_HEIGHT,
 };
 use std::sync::Arc;
@@ -23,7 +23,7 @@ struct Circle {
     color: Color,
 }
 
-impl<Message, Theme, Renderer: cosmic::iced_renderer::geometry::Renderer>
+impl<Message, Theme, Renderer: iced_graphics::geometry::Renderer>
     canvas::Program<Message, Theme, Renderer> for Circle
 {
     type State = ();
@@ -50,23 +50,23 @@ impl<Internal, Message: std::clone::Clone + 'static, Lower: Decorations<Internal
 {
     fn view(&self, window: &Internal) -> cosmic::Element<'_, Message> {
         let orig = self.lower.view(window);
-        widget::row()
-            .push(
-                widget::column()
-                    .push(canvas(Circle {
-                        radius: (self.height as f32 / 2.) * 0.8,
-                        color: Color::from_rgba(1.0, 0.0, 0.0, 1.0),
-                    }))
-                    .width(self.height as f32),
-            )
-            .push(orig)
-            .into()
+        widget::row([
+            widget::column([canvas(Circle {
+                radius: (self.height as f32 / 2.) * 0.8,
+                color: Color::from_rgba(1.0, 0.0, 0.0, 1.0),
+            })
+            .into()])
+            .width(self.height as f32)
+            .into(),
+            orig,
+        ])
+        .into()
     }
 }
 
 /// The customized cosmic-comp entrypoint
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    cosmic_comp::run(Hooks {
+    wmde_comp::run(Hooks {
         window_decorations: Some(Arc::new(AddIndicator {
             height: SSD_HEIGHT,
             lower: DefaultWindowDecorations,

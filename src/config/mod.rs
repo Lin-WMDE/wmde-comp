@@ -189,7 +189,7 @@ impl Config {
             });
 
         // Listen for updates to the toolkit config
-        if let Ok(tk_config) = cosmic_config::Config::new("fun.wmde.Tk", 1) {
+        if let Ok(tk_config) = CosmicTk::config() {
             fn handle_new_toolkit_config(config: CosmicTk, state: &mut State) {
                 if cosmic::icon_theme::default() != config.icon_theme {
                     cosmic::icon_theme::set_default(config.icon_theme.clone());

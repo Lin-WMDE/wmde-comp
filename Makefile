@@ -23,8 +23,8 @@ endif
 
 TARGET_BIN="$(DESTDIR)$(bindir)/$(BINARY)"
 
-KEYBINDINGS_CONF="$(DESTDIR)$(sharedir)/cosmic/fun.wmde.Settings.Shortcuts/v1/defaults"
-TILING_EXCEPTIONS_CONF="$(DESTDIR)$(sharedir)/cosmic/fun.wmde.Settings.WindowRules/v1/tiling_exception_defaults"
+KEYBINDINGS_CONF="$(DESTDIR)$(sharedir)/wmde/fun.wmde.Settings.Shortcuts/v1/defaults"
+TILING_EXCEPTIONS_CONF="$(DESTDIR)$(sharedir)/wmde/fun.wmde.Settings.WindowRules/v1/tiling_exception_defaults"
 
 all: extract-vendor
 	cargo build $(ARGS)

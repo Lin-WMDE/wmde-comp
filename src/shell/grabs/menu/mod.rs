@@ -476,7 +476,7 @@ impl Program for ContextMenu {
         .padding(1)
         .class(theme::Container::custom(|theme| {
             let cosmic = theme.cosmic();
-            let component = &cosmic.background(false).component;
+            let component = &cosmic.background(cosmic.frosted_windows).component;
             iced_widget::container::Style {
                 snap: true,
                 icon_color: Some(cosmic.accent.base.into()),

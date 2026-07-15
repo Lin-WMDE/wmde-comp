@@ -1364,8 +1364,8 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
 
                 iced_widget::container::Style {
                     snap: true,
-                    icon_color: Some(cosmic_theme.background(false).on.into()),
-                    text_color: Some(cosmic_theme.background(false).on.into()),
+                    icon_color: Some(cosmic_theme.background(cosmic_theme.frosted_windows).on.into()),
+                    text_color: Some(cosmic_theme.background(cosmic_theme.frosted_windows).on.into()),
                     background: Some(Background::Color(background.into())),
                     border: Border {
                         radius,

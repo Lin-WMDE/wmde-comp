@@ -65,7 +65,7 @@ impl From<TabBackgroundTheme> for theme::Container<'_> {
                     icon_color: Some(Color::from(theme.cosmic().accent_text_color())),
                     text_color: Some(Color::from(theme.cosmic().accent_text_color())),
                     background: Some(Background::Color(
-                        theme.cosmic().primary(false).component.selected.into(),
+                        theme.cosmic().primary(theme.cosmic().frosted_windows).component.selected.into(),
                     )),
                     border: Border {
                         radius: 0.0.into(),
@@ -81,7 +81,7 @@ impl From<TabBackgroundTheme> for theme::Container<'_> {
                     icon_color: None,
                     text_color: None,
                     background: Some(Background::Color(
-                        theme.cosmic().primary(false).component.base.into(),
+                        theme.cosmic().primary(theme.cosmic().frosted_windows).component.base.into(),
                     )),
                     border: Border {
                         radius: 0.0.into(),

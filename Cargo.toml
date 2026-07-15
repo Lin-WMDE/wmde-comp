@@ -3,7 +3,7 @@ authors = ["Victoria Brekenfeld"]
 edition = "2024"
 license = "GPL-3.0-only"
 name = "wmde-comp"
-version = "1.0.0"
+version = "1.2.0"
 rust-version = "1.90"
 
 [workspace]
@@ -28,7 +28,7 @@ cosmic-settings-config = { git = "https://github.com/pop-os/cosmic-settings-daem
 cosmic-settings-daemon-config = { git = "https://github.com/pop-os/cosmic-settings-daemon", features = [
     "greeter",
 ] }
-cosmic-text = { git = "https://github.com/pop-os/cosmic-text.git", features = [
+cosmic-text = { version = "0.19", features = [
     "shape-run-cache",
 ] }
 libdisplay-info = "0.3.0"
@@ -40,6 +40,7 @@ i18n-embed = { version = "0.16", features = [
 ] }
 i18n-embed-fl = "0.10"
 iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
+iced_graphics = { path = "../libcosmic/iced/graphics", features = ["geometry"] }
 indexmap = "2.13"
 keyframe = "1.1.1"
 libcosmic = { path = "../libcosmic", default-features = false }
@@ -146,7 +147,6 @@ cosmic-config = { path = "../libcosmic/cosmic-config" }
 cosmic-config-derive = { path = "../libcosmic/cosmic-config-derive" }
 cosmic-theme = { path = "../libcosmic/cosmic-theme" }
 iced = { path = "../libcosmic/iced" }
-iced_accessibility = { path = "../libcosmic/iced/accessibility" }
 iced_core = { path = "../libcosmic/iced/core" }
 iced_debug = { path = "../libcosmic/iced/debug" }
 iced_futures = { path = "../libcosmic/iced/futures" }
@@ -157,11 +157,11 @@ iced_runtime = { path = "../libcosmic/iced/runtime" }
 iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
 iced_wgpu = { path = "../libcosmic/iced/wgpu" }
 iced_widget = { path = "../libcosmic/iced/widget" }
-iced_winit = { path = "../libcosmic/iced/winit" }
 
 # cosmic-comp-config pins cosmic-config from the trailing-slash URL variant; patch it too.
 [patch."https://github.com/pop-os/libcosmic/"]
 cosmic-config = { path = "../libcosmic/cosmic-config" }
+cosmic-theme = { path = "../libcosmic/cosmic-theme" }
 
 # cosmic-settings-config (via cosmic-settings-daemon) pins libcosmic from the .git URL
 # variant; patch it too so a single (local) libcosmic/cosmic-config resolves in the graph.

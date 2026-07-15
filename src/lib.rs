@@ -251,7 +251,7 @@ fn print_help(version: &str, git_rev: &str) {
         r#"wmde-comp {version} (git commit {git_rev})
 WMDE <https://wmde.fun> (fork of cosmic-comp by System76 <info@system76.com>)
 
-wmde-comp is a Wayland Compositor, forked from cosmic-comp of the COSMIC™ desktop environment.
+wmde-comp is a Wayland Compositor, forked from cosmic-comp of the COSMIC desktop environment.
 
 Project home page: https://github.com/Lin-WMDE/wmde-comp
 

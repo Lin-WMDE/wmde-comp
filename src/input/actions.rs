@@ -1070,7 +1070,7 @@ impl State {
             .env("DISPLAY", &display)
             .env("XDG_ACTIVATION_TOKEN", &*token)
             .env("DESKTOP_STARTUP_ID", &*token)
-            .env_remove("COSMIC_SESSION_SOCK");
+            .env_remove("WMDE_SESSION_SOCK");
         unsafe {
             cmd.pre_exec(|| {
                 crate::utils::rlimit::restore_nofile_limit();
