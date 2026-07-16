@@ -274,6 +274,10 @@ pub struct Shell {
     pub session_lock: Option<SessionLock>,
     pub seats: Seats,
     pub previous_workspace_idx: Option<(Serial, WeakOutput, usize)>,
+    // Native alt-tab cycle state: an MRU-ordered window snapshot frozen for the
+    // duration of a modifier hold. Built on the first Tab, walked by locating the
+    // current focus within it, and cleared when the base modifier (Alt/Super) releases.
+    pub alt_tab: Option<Vec<FocusTarget>>,
     pub xwayland_keyboard_grab: Option<XWaylandKeyboardGrab<State>>,
 
     theme: cosmic::Theme,
@@ -1679,6 +1683,7 @@ impl Shell {
             override_redirect_windows: Vec::new(),
             session_lock: None,
             previous_workspace_idx: None,
+            alt_tab: None,
             xwayland_keyboard_grab: None,
 
             theme,
@@ -4091,6 +4096,76 @@ impl Shell {
             next.map(|elem| FocusResult::Some(KeyboardFocusTarget::Element(elem.clone())))
                 .unwrap_or(FocusResult::None)
         }
+    }
+
+    /// Cycle keyboard focus to the next/previous window of the active workspace,
+    /// like a classic alt-tab. On the first Tab of a modifier hold the candidate order
+    /// is snapshotted MRU-first and frozen (see [`Shell::alt_tab`], cleared when the base
+    /// modifier releases). Each press then locates the currently focused window inside the
+    /// frozen order and steps one over, so holding the modifier walks every window (in
+    /// either direction) instead of toggling two, and closing a window mid-cycle can't
+    /// desync a stored index.
+    #[must_use]
+    pub fn cycle_window(
+        &mut self,
+        forward: bool,
+        seat: &Seat<State>,
+    ) -> Option<KeyboardFocusTarget> {
+        if self.alt_tab.is_none() {
+            let output = seat.active_output();
+            let set = self.workspaces.sets.get(&output)?;
+            let workspace = &set.workspaces[set.active];
+
+            // Most-recently-used order first (already skips dead/minimized)...
+            let mut order: Vec<FocusTarget> =
+                workspace.focus_stack.get(seat).iter().cloned().collect();
+            // ...then any visible windows not yet focused this session, in layout order.
+            for elem in set.sticky_layer.space.elements().chain(workspace.mapped()) {
+                if !order
+                    .iter()
+                    .any(|t| matches!(t, FocusTarget::Window(m) if m == elem))
+                {
+                    order.push(FocusTarget::Window(elem.clone()));
+                }
+            }
+
+            self.alt_tab = Some(order);
+        }
+
+        // Owned snapshot of the current keyboard focus (drops any keyboard borrow).
+        let current = seat.get_keyboard().and_then(|k| k.current_focus());
+
+        let order = self.alt_tab.as_mut()?;
+        // Drop windows that closed mid-cycle; we re-locate the focus by identity below,
+        // so shifting indices here can never desync the cycle.
+        order.retain(|t| t.alive());
+        let n = order.len();
+        if n == 0 {
+            self.alt_tab = None;
+            return None;
+        }
+
+        // Find where the currently focused window sits in the frozen order.
+        let current_idx = current.as_ref().and_then(|focus| match focus {
+            KeyboardFocusTarget::Element(elem) => order
+                .iter()
+                .position(|t| matches!(t, FocusTarget::Window(m) if m == elem)),
+            KeyboardFocusTarget::Fullscreen(surface) => order
+                .iter()
+                .position(|t| matches!(t, FocusTarget::Fullscreen(s) if s == surface)),
+            _ => None,
+        });
+
+        // Step one from the current window; if focus isn't a window in the snapshot
+        // (e.g. a layer surface), land on the MRU top instead.
+        let next = match current_idx {
+            Some(i) if forward => (i + 1) % n,
+            Some(i) => (i + n - 1) % n,
+            None if forward => 0,
+            None => n - 1,
+        };
+
+        Some(order[next].clone().into())
     }
 
     #[must_use]

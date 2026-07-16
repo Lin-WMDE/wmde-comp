@@ -240,6 +240,13 @@ impl State {
                                         .0
                                         .lock()
                                         .unwrap() = Some(serial);
+
+                                    // End any native alt-tab session once the base
+                                    // modifier (Alt/Super) is no longer held, so the next
+                                    // hold rebuilds the cycle order from a fresh MRU stack.
+                                    if !modifiers.alt && !modifiers.logo {
+                                        data.common.shell.write().alt_tab = None;
+                                    }
                                 }
 
                                 let current_focus = seat.get_keyboard().unwrap().current_focus();

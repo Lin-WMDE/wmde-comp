@@ -792,6 +792,20 @@ impl State {
                 }
             }
 
+            Action::NextWindow => {
+                let target = self.common.shell.write().cycle_window(true, seat);
+                if let Some(target) = target {
+                    Shell::set_focus(self, Some(&target), seat, None, true);
+                }
+            }
+
+            Action::PrevWindow => {
+                let target = self.common.shell.write().cycle_window(false, seat);
+                if let Some(target) = target {
+                    Shell::set_focus(self, Some(&target), seat, None, true);
+                }
+            }
+
             Action::Move(direction) => {
                 let res = self
                     .common
