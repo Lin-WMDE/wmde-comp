@@ -104,8 +104,6 @@
 
     (modifiers: [Super], key: "a"): System(AppLibrary),
     (modifiers: [Super], key: "w"): System(WorkspaceOverview),
-    (modifiers: [Super], key: "slash"): System(Launcher),
-    (modifiers: [Super]): System(Launcher),
     (modifiers: [Alt], key: "Tab"): NextWindow,
     (modifiers: [Alt, Shift], key: "Tab"): PrevWindow,
     (modifiers: [Super], key: "Tab"): NextWindow,
