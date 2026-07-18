@@ -7143,12 +7143,3 @@ dependencies = [
  "syn",
  "winnow 1.0.3",
 ]
-
-[[patch.unused]]
-name = "cosmic-client-toolkit"
-version = "0.2.0"
-source = "git+https://github.com/pop-os//cosmic-protocols?branch=main#e95d89504513e1407f89a189aca328fbecc9eeef"
-
-[[patch.unused]]
-name = "cosmic-randr"
-version = "0.1.0"

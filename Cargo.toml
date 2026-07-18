@@ -179,7 +179,6 @@ cosmic-settings-daemon-config = { path = "../wmde-settings-daemon/cosmic-setting
 
 [patch."https://github.com/pop-os/cosmic-protocols"]
 cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
-cosmic-client-toolkit = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
 
 [patch.crates-io]
 smithay = { git = "https://github.com/smithay/smithay.git", rev = "8eb4076" }
@@ -189,9 +188,7 @@ smithay = { git = "https://github.com/smithay/smithay.git", rev = "8eb4076" }
 # consumers declare the dep with and without a trailing slash; the shell crate pulls the
 # lib crate transitively from the same git source, so both are patched.
 [patch."https://github.com/pop-os/cosmic-randr"]
-cosmic-randr = { path = "../wmde-randr/lib" }
 cosmic-randr-shell = { path = "../wmde-randr/shell" }
 
 [patch."https://github.com/pop-os/cosmic-randr/"]
-cosmic-randr = { path = "../wmde-randr/lib" }
 cosmic-randr-shell = { path = "../wmde-randr/shell" }
