@@ -29,10 +29,14 @@ sha256sums=('SKIP')
 
 pkgver() {
   cd "$srcdir/$pkgname"
+  # WMDE unified version: 1.3 (libcosmic base) . <commits since nearest tag> . g<short>.
   local desc
-  desc=$(git describe --long --tags --abbrev=7 2>/dev/null) \
-    || desc="1.2.0-$(git rev-list --count HEAD)-g$(git rev-parse --short=7 HEAD)"
-  printf '%s' "$desc" | sed 's/^epoch-//;s/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+  desc=$(git describe --long --tags --abbrev=7 2>/dev/null || true)
+  if [ -n "$desc" ]; then
+    printf '1.3.%s.g%s' "$(printf '%s' "$desc" | sed -E 's/.*-([0-9]+)-g[0-9a-f]+$/\1/')" "$(git rev-parse --short=7 HEAD)"
+  else
+    printf '1.3.%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+  fi
 }
 
 build() {
