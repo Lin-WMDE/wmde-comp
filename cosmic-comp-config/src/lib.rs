@@ -129,7 +129,9 @@ impl Default for CosmicCompConfig {
             keyboard_config: Default::default(),
             autotile: Default::default(),
             autotile_behavior: Default::default(),
-            active_hint: true,
+            // WMDE: no accent-colored focus border around the active window (Win10
+            // has no such hint); upstream default is true.
+            active_hint: false,
             focus_follows_cursor: false,
             cursor_follows_focus: false,
             focus_follows_cursor_delay: 250,
