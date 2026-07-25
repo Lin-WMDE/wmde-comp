@@ -182,7 +182,7 @@ cosmic-settings-daemon-config = { path = "../wmde-settings-daemon/cosmic-setting
 cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
 
 [patch.crates-io]
-smithay = { git = "https://github.com/smithay/smithay.git", rev = "812bd33" }
+smithay = { git = "https://github.com/smithay/smithay.git", rev = "1ed69cb" }
 
 # WMDE: redirect the last upstream pop-os/cosmic-randr git dep to the local wmde-randr
 # fork (crate names kept - only the CLI binary is renamed). Both URL forms because the
