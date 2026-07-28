@@ -525,6 +525,15 @@ impl FloatingLayout {
             });
 
         mapped.set_tiled(false);
+        // WMDE: ...and immediately say which edges really are flush, because set_tiled(false)
+        // has just cleared all four. This is the one funnel every floating placement goes
+        // through, and the only point where the final position and size are both known - doing
+        // it at the snap sites instead left the reset above to undo it.
+        Self::report_flush_edges(
+            &mapped,
+            Rectangle::new(position, win_geo.size),
+            output_geometry,
+        );
         mapped.set_geometry(Rectangle::new(position, win_geo.size).to_global(&output));
         mapped.configure();
 
@@ -1594,12 +1603,6 @@ impl FloatingLayout {
         mapped.set_tiled(true);
         let snapped_geo = self.snapped_geometry(corners);
         let output = self.space.outputs().next().unwrap().clone();
-        {
-            let layers = layer_map_for_output(&output);
-            let work_area = layers.non_exclusive_zone();
-            std::mem::drop(layers);
-            self.set_flush_edges(mapped, snapped_geo, work_area);
-        }
         mapped.set_geometry(snapped_geo.to_global(&output));
         mapped.configure();
     }
@@ -1610,8 +1613,7 @@ impl FloatingLayout {
     /// "Flush" means the gap really is zero. With the theme's gaps turned up, a snapped window
     /// stands off the screen edge and keeps all four corners round, which is the behaviour the
     /// gap setting is asking for.
-    fn set_flush_edges(
-        &self,
+    fn report_flush_edges(
         mapped: &CosmicMapped,
         geo: Rectangle<i32, Local>,
         work_area: Rectangle<i32, Logical>,
@@ -1680,7 +1682,6 @@ impl FloatingLayout {
         mapped.set_maximized(false);
         mapped.moved_since_mapped.store(true, Ordering::SeqCst);
 
-        self.set_flush_edges(mapped, new_geo, output_geometry);
         self.map_internal(
             mapped.clone(),
             Some(new_geo.loc),
