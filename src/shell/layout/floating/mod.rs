@@ -47,6 +47,8 @@ use crate::{
 };
 
 mod grabs;
+// WMDE: fraction-based snap layouts for the drag-to-top strip.
+pub mod snap;
 pub use self::grabs::*;
 
 pub const ANIMATION_DURATION: Duration = Duration::from_millis(200);
