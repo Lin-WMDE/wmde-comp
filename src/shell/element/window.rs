@@ -655,6 +655,12 @@ impl CosmicWindow {
             })
     }
 
+    /// WMDE: the compositor's own view of whether this window is snapped, as opposed to the
+    /// state echoed back by the client.
+    pub fn is_tiled(&self) -> bool {
+        self.0.with_program(|p| p.is_tiled())
+    }
+
     pub fn set_tiled(&self, tiled: bool) {
         self.0.with_program(|p| {
             p.tiled.store(tiled, Ordering::Release);

@@ -612,7 +612,12 @@ impl FloatingLayout {
             );
         }
 
-        if window.floating_tiled.lock().unwrap().take().is_some() {
+        // WMDE: `is_snapped` as well as `floating_tiled`, because the thirds and the composite
+        // layouts have no TiledCorners equivalent and leave that field empty. Without it they
+        // fell into the branch below, which records the *snapped* geometry as the one to go
+        // back to - so dragging a window out of them kept the snapped size.
+        let was_snapped = window.floating_tiled.lock().unwrap().take().is_some();
+        if was_snapped || window.is_snapped() {
             if let Some(last_size) = window.last_geometry.lock().unwrap().map(|geo| geo.size) {
                 let geometry = Rectangle::new(mapped_geometry.loc, last_size);
                 window.set_tiled(false);
@@ -1660,7 +1665,7 @@ impl FloatingLayout {
 
         // Remember where the window was before it was tiled, so restoring it has somewhere to
         // go - move_element does the same on the first snap.
-        if mapped.floating_tiled.lock().unwrap().is_none() {
+        if !mapped.is_snapped() {
             let last_geometry = mapped
                 .maximized_state
                 .lock()

@@ -350,6 +350,20 @@ impl CosmicMapped {
         }
     }
 
+    /// WMDE: the compositor's own view of whether this window is snapped.
+    ///
+    /// Not [`Self::is_tiled`], which reads the state echoed back by the client after it acks a
+    /// configure. This is the flag the compositor maintains itself, and it is true for the
+    /// layouts that have no `TiledCorners` equivalent - thirds and the composites - which is
+    /// what `floating_tiled` alone cannot answer.
+    pub fn is_snapped(&self) -> bool {
+        match &self.element {
+            CosmicMappedInternal::Window(w) => w.is_tiled(),
+            CosmicMappedInternal::Stack(s) => s.is_tiled(),
+            _ => false,
+        }
+    }
+
     /// WMDE: which edges sit flush against the work area, `[top, right, bottom, left]`.
     ///
     /// Goes through [`Self::active_window`] rather than matching on the element: a stacked
