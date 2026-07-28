@@ -3714,6 +3714,19 @@ impl Shell {
         Some((grab, Focus::Keep))
     }
 
+    /// WMDE: where the pointer sits across the window it grabbed, as `0.0..=1.0`.
+    ///
+    /// Used to keep the pointer at the same relative point after a snapped window is restored to
+    /// its own size. This used to divide the pointer position by the window's RIGHT EDGE, which
+    /// only gives the right answer for a window whose left edge is at zero - so dragging out of a
+    /// left-half snap looked fine while the centre third threw the window sideways.
+    fn grab_ratio(pointer_x: f64, elem_x: i32, elem_w: i32) -> f64 {
+        if elem_w <= 0 {
+            return 0.5;
+        }
+        ((pointer_x - elem_x as f64) / elem_w as f64).clamp(0.0, 1.0)
+    }
+
     pub fn move_request(
         &mut self,
         surface: &WlSurface,
@@ -3873,7 +3886,8 @@ impl Shell {
                 // if this changed the width, the window was tiled in floating mode
                 if let Some(new_size) = new_size {
                     let output = workspace.output();
-                    let ratio = pos.to_local(output).x / (elem_geo.loc.x + elem_geo.size.w) as f64;
+                    let ratio =
+                        Self::grab_ratio(pos.to_local(output).x, elem_geo.loc.x, elem_geo.size.w);
 
                     initial_window_location = Point::from((
                         pos.x - (new_size.w as f64 * ratio),
@@ -3918,8 +3932,11 @@ impl Shell {
                 }
 
                 if let Some(new_size) = new_size {
-                    let ratio =
-                        pos.to_local(&cursor_output).x / (elem_geo.loc.x + elem_geo.size.w) as f64;
+                    let ratio = Self::grab_ratio(
+                        pos.to_local(&cursor_output).x,
+                        elem_geo.loc.x,
+                        elem_geo.size.w,
+                    );
                     initial_window_location = Point::<f64, _>::from((
                         pos.x - (new_size.w as f64 * ratio),
                         pos.y - MOVE_GRAB_Y_OFFSET,
