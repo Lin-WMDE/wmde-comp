@@ -525,15 +525,10 @@ impl FloatingLayout {
             });
 
         mapped.set_tiled(false);
-        // WMDE: ...and immediately say which edges really are flush, because set_tiled(false)
-        // has just cleared all four. This is the one funnel every floating placement goes
-        // through, and the only point where the final position and size are both known - doing
-        // it at the snap sites instead left the reset above to undo it.
-        Self::report_flush_edges(
-            &mapped,
-            Rectangle::new(position, win_geo.size),
-            output_geometry,
-        );
+        // WMDE: ...and immediately restate whether it is snapped, because set_tiled(false) has
+        // just cleared that. This is the one funnel every floating placement goes through;
+        // doing it at the snap sites instead left the reset above to undo it.
+        Self::report_snapped(&mapped);
         mapped.set_geometry(Rectangle::new(position, win_geo.size).to_global(&output));
         mapped.configure();
 
@@ -1607,34 +1602,19 @@ impl FloatingLayout {
         mapped.configure();
     }
 
-    /// WMDE: tell `mapped` which of its edges sit flush against the work area, so a client can
-    /// square exactly the corners that touch the screen and leave the rest rounded.
+    /// WMDE: mark `mapped` as snapped, or not, for the client and for the compositor's own
+    /// corner rounding - a snapped window has square corners, all four of them.
     ///
-    /// "Flush" means the gap really is zero. With the theme's gaps turned up, a snapped window
-    /// stands off the screen edge and keeps all four corners round, which is the behaviour the
-    /// gap setting is asking for.
-    fn report_flush_edges(
-        mapped: &CosmicMapped,
-        geo: Rectangle<i32, Local>,
-        work_area: Rectangle<i32, Logical>,
-    ) {
-        let work_area = work_area.as_local();
-        let edges = [
-            geo.loc.y <= work_area.loc.y,
-            geo.loc.x + geo.size.w >= work_area.loc.x + work_area.size.w,
-            geo.loc.y + geo.size.h >= work_area.loc.y + work_area.size.h,
-            geo.loc.x <= work_area.loc.x,
-        ];
-        tracing::debug!(
-            ?geo,
-            ?work_area,
-            top = edges[0],
-            right = edges[1],
-            bottom = edges[2],
-            left = edges[3],
-            "flush edges"
-        );
-        mapped.set_tiled_edges(edges);
+    /// This is deliberately keyed on *being snapped*, not on the geometry touching the edge of
+    /// the screen: a floating window dragged up against the edge is not snapped and keeps its
+    /// rounded corners.
+    ///
+    /// It goes through the per-edge states rather than `set_tiled`, because that one is gated
+    /// on `clip_floating_windows` and so never reaches the client at all in this
+    /// configuration.
+    fn report_snapped(mapped: &CosmicMapped) {
+        let snapped = mapped.floating_tiled.lock().unwrap().is_some() || mapped.is_maximized(false);
+        mapped.set_tiled_edges([snapped; 4]);
     }
 
     /// WMDE: place `mapped` in `cell`, as picked from the drag-to-top layout strip.
