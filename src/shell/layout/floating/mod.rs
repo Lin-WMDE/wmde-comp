@@ -1682,26 +1682,65 @@ impl FloatingLayout {
 
     /// WMDE: place `mapped` in `cell`, as picked from the drag-to-top layout strip.
     ///
-    /// Cells that are a known snapped state go through [`Self::snap_to_corner`], so a window
-    /// dropped on the "left half" of the strip ends up in exactly the state a drag to the left
-    /// edge produces. The rest - thirds, and the composite layouts - have no such state, so
-    /// they are placed as geometry and left untiled.
-    pub fn snap_to_cell(&self, mapped: &CosmicMapped, cell: &snap::SnapCell) {
-        if let Some(corner) = cell.as_tiled_corner() {
-            self.snap_to_corner(mapped, &corner);
-            return;
+    /// This goes through [`Self::map_internal`], the same way [`Self::move_element`] does, and
+    /// NOT through [`Self::snap_to_corner`]. snap_to_corner only assigns the element geometry;
+    /// it is called from paths that are mapping the window anyway. Here the window has just
+    /// been mapped by `drop_window` at the position it was dropped, so assigning a geometry
+    /// leaves it sitting there - which is exactly what "the window moves randomly or not at
+    /// all" looked like.
+    ///
+    /// A cell that is a known snapped state still records itself as one, so a window dropped
+    /// on the "left half" of the strip ends up in the same state a drag to the left edge
+    /// produces, and restore-to-floating and the keyboard moves keep working on it.
+    pub fn snap_to_cell(&mut self, mapped: &CosmicMapped, cell: &snap::SnapCell) {
+        let output = self.space.outputs().next().unwrap().clone();
+        let output_geometry = {
+            let layers = layer_map_for_output(&output);
+            let geo = layers.non_exclusive_zone();
+            std::mem::drop(layers);
+            geo
+        };
+        let new_geo = cell.relative_geometry(output_geometry, self.gaps());
+
+        let current_geometry = self
+            .space
+            .element_geometry(mapped)
+            .map(RectExt::as_local)
+            .unwrap_or(new_geo);
+        let start_rectangle = match self.animations.remove(mapped) {
+            Some(anim) => anim.geometry(
+                output_geometry,
+                current_geometry,
+                mapped.floating_tiled.lock().unwrap().as_ref(),
+                self.gaps(),
+            ),
+            None => current_geometry,
+        };
+
+        // Remember where the window was before it was tiled, so restoring it has somewhere to
+        // go - move_element does the same on the first snap.
+        if mapped.floating_tiled.lock().unwrap().is_none() {
+            let last_geometry = mapped
+                .maximized_state
+                .lock()
+                .unwrap()
+                .take()
+                .map(|state| state.original_geometry)
+                .or(Some(current_geometry));
+            *mapped.last_geometry.lock().unwrap() = last_geometry;
         }
 
-        *mapped.floating_tiled.lock().unwrap() = None;
-        let output = self.space.outputs().next().unwrap().clone();
-        let geo = {
-            let layers = layer_map_for_output(&output);
-            let non_exclusive = layers.non_exclusive_zone();
-            std::mem::drop(layers);
-            cell.relative_geometry(non_exclusive, self.gaps())
-        };
-        mapped.set_geometry(geo.to_global(&output));
-        mapped.configure();
+        *mapped.floating_tiled.lock().unwrap() = cell.as_tiled_corner();
+        mapped.set_tiled(true);
+        mapped.set_maximized(false);
+        mapped.moved_since_mapped.store(true, Ordering::SeqCst);
+
+        self.map_internal(
+            mapped.clone(),
+            Some(new_geo.loc),
+            Some(new_geo.size.as_logical()),
+            Some(start_rectangle),
+        );
     }
 
     fn snapped_geometry(&self, corners: &TiledCorners) -> Rectangle<i32, Local> {
