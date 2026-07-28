@@ -524,10 +524,11 @@ impl FloatingLayout {
                 pos
             });
 
-        mapped.set_tiled(false);
-        // WMDE: ...and immediately restate whether it is snapped, because set_tiled(false) has
-        // just cleared that. This is the one funnel every floating placement goes through;
-        // doing it at the snap sites instead left the reset above to undo it.
+        // WMDE: was `set_tiled(false)` unconditionally, which lied about a snapped window - it
+        // cleared the compositor's own `tiled` flag, and that flag is what corner_radius reads
+        // at render time, so a snapped window was indistinguishable from a floating one. This
+        // is the funnel every floating placement goes through, so it is where the truth has to
+        // be restated.
         Self::report_snapped(&mapped);
         mapped.set_geometry(Rectangle::new(position, win_geo.size).to_global(&output));
         mapped.configure();
@@ -1614,6 +1615,9 @@ impl FloatingLayout {
     /// configuration.
     fn report_snapped(mapped: &CosmicMapped) {
         let snapped = mapped.floating_tiled.lock().unwrap().is_some() || mapped.is_maximized(false);
+        // Both signals. `set_tiled` keeps the compositor's own flag, which is what decides the
+        // corner radii at render time; the per-edge states are what the client reads.
+        mapped.set_tiled(snapped);
         mapped.set_tiled_edges([snapped; 4]);
     }
 

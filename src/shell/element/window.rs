@@ -687,13 +687,7 @@ impl CosmicWindow {
             // below take the MAX of the theme radius and the radius the client hints, so a
             // client asking for zero was lifted straight back to the theme's rounding - which
             // is why a snapped window kept its rounded corners whatever the client sent.
-            let squared = |corners: [u8; 4]| {
-                if p.window.is_tiled(false).unwrap_or(false) {
-                    [0; 4]
-                } else {
-                    corners
-                }
-            };
+            let squared = |corners: [u8; 4]| if is_tiled { [0; 4] } else { corners };
 
             squared(match (has_ssd, clip) {
                 (has_ssd, true) => {
