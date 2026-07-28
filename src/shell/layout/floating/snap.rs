@@ -7,12 +7,17 @@
 //! to and the thumbnail drawn for it in the strip, so the picture the user clicks and the
 //! place the window lands cannot drift apart.
 //!
-//! [`SnapCell::relative_geometry`] reproduces [`super::TiledCorners::relative_geometry`]
-//! exactly for the halves and quarters that already existed - there are tests for it below.
-//! Adding the strip therefore does not quietly change where the existing edge snapping puts
-//! windows.
+//! [`TiledCorners`] - the snapped states that already existed - is expressed as cells too and
+//! computes its geometry through here, so drag-to-edge snapping and the strip cannot place the
+//! same half of the screen in two different rectangles.
+//!
+//! A snapped window sits **flush** against the edge of the work area; the theme's gap goes
+//! between neighbouring windows only. There is nothing between a window and the screen for a
+//! gap to separate, and it is what lets the corners that touch the edge be squared.
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
+
+use super::TiledCorners;
 
 use crate::utils::prelude::*;
 
@@ -35,10 +40,8 @@ impl SnapCell {
 
     /// Where this cell lands on `work_area`, with the theme's gaps applied.
     ///
-    /// The gap convention is the one [`super::TiledCorners`] uses: `inner` at the outer edges
-    /// of the work area and `inner` between neighbouring cells. That falls out of insetting
-    /// the work area by half a gap, placing the cell inside it by fraction, and then insetting
-    /// the cell by half a gap again - two halves meet at every shared edge.
+    /// Flush with the work area on any edge the cell shares with it, and separated from a
+    /// neighbouring cell by the theme's `inner` gap.
     pub fn relative_geometry(
         &self,
         work_area: Rectangle<i32, Logical>,
@@ -47,58 +50,84 @@ impl SnapCell {
         let (_, inner) = gaps;
         let half = inner / 2;
 
-        // The box the fractions are measured against.
-        let area_x = work_area.loc.x + half;
-        let area_y = work_area.loc.y + half;
-        let area_w = work_area.size.w - inner;
-        let area_h = work_area.size.h - inner;
-
         // Round the far edge from the fraction as well, instead of adding a rounded width to a
         // rounded origin: that keeps two cells sharing an edge from overlapping or leaving a
         // one-pixel seam when the fraction does not divide the area evenly.
-        let x0 = area_x + (self.x * area_w as f64).round() as i32;
-        let y0 = area_y + (self.y * area_h as f64).round() as i32;
-        let x1 = area_x + ((self.x + self.w) * area_w as f64).round() as i32;
-        let y1 = area_y + ((self.y + self.h) * area_h as f64).round() as i32;
+        let edge = |frac: f64, len: i32| (frac * len as f64).round() as i32;
+        let x0 = work_area.loc.x + edge(self.x, work_area.size.w);
+        let y0 = work_area.loc.y + edge(self.y, work_area.size.h);
+        let x1 = work_area.loc.x + edge(self.x + self.w, work_area.size.w);
+        let y1 = work_area.loc.y + edge(self.y + self.h, work_area.size.h);
+
+        // The gap goes between windows, never between a window and the screen: a snapped
+        // window sits flush against the edge of the work area. Each internal edge gives up
+        // half a gap and its neighbour gives up the other half, so the gap between two windows
+        // comes out as `inner`.
+        let at_start = |frac: f64| frac.abs() < f64::EPSILON;
+        let at_end = |frac: f64| (frac - 1.0).abs() < f64::EPSILON;
+        let left = if at_start(self.x) { 0 } else { half };
+        let top = if at_start(self.y) { 0 } else { half };
+        let right = if at_end(self.x + self.w) { 0 } else { half };
+        let bottom = if at_end(self.y + self.h) { 0 } else { half };
 
         Rectangle::new(
-            Point::from((x0 + half, y0 + half)),
-            Size::from(((x1 - x0 - inner).max(1), (y1 - y0 - inner).max(1))),
+            Point::from((x0 + left, y0 + top)),
+            Size::from((
+                (x1 - x0 - left - right).max(1),
+                (y1 - y0 - top - bottom).max(1),
+            )),
         )
         .as_local()
     }
-}
 
-impl SnapCell {
-    /// The [`super::TiledCorners`] this cell is the same rectangle as, if there is one.
+    /// The [`TiledCorners`] this cell is the same rectangle as, if there is one.
     ///
     /// Halves and quarters already exist as snapped states, so dropping a window on one of
     /// those cells goes through the same path as dragging it to that edge - same recorded
-    /// state, same restore behaviour. Thirds and the composite layouts have no equivalent and
-    /// are placed as plain geometry.
-    pub fn as_tiled_corner(&self) -> Option<super::TiledCorners> {
-        use super::TiledCorners::*;
-        let eq = |a: f64, b: f64| (a - b).abs() < f64::EPSILON;
-        let full_w = eq(self.w, 1.0);
-        let full_h = eq(self.h, 1.0);
-        let half_w = eq(self.w, 0.5);
-        let half_h = eq(self.h, 0.5);
-        let left = eq(self.x, 0.0);
-        let right = eq(self.x, 0.5);
-        let top = eq(self.y, 0.0);
-        let bottom = eq(self.y, 0.5);
+    /// state, same restore behaviour. Thirds and the composite layouts have no equivalent.
+    ///
+    /// Derived from [`TiledCorners::as_cell`] rather than written out again: a new snapped
+    /// state only has to be described in one place.
+    pub fn as_tiled_corner(&self) -> Option<TiledCorners> {
+        const ALL: [TiledCorners; 8] = [
+            TiledCorners::Top,
+            TiledCorners::Bottom,
+            TiledCorners::Left,
+            TiledCorners::Right,
+            TiledCorners::TopLeft,
+            TiledCorners::TopRight,
+            TiledCorners::BottomLeft,
+            TiledCorners::BottomRight,
+        ];
+        ALL.into_iter().find(|corner| corner.as_cell() == *self)
+    }
+}
 
-        Some(match (left, right, top, bottom) {
-            _ if full_w && half_h && left && top => Top,
-            _ if full_w && half_h && left && bottom => Bottom,
-            _ if half_w && full_h && left && top => Left,
-            _ if half_w && full_h && right && top => Right,
-            (true, _, true, _) if half_w && half_h => TopLeft,
-            (_, true, true, _) if half_w && half_h => TopRight,
-            (true, _, _, true) if half_w && half_h => BottomLeft,
-            (_, true, _, true) if half_w && half_h => BottomRight,
-            _ => return None,
-        })
+impl TiledCorners {
+    /// The cell this snapped state is, so both paths compute one geometry.
+    pub const fn as_cell(self) -> SnapCell {
+        match self {
+            TiledCorners::Top => SnapCell::new(0.0, 0.0, 1.0, 0.5),
+            TiledCorners::Bottom => SnapCell::new(0.0, 0.5, 1.0, 0.5),
+            TiledCorners::Left => SnapCell::new(0.0, 0.0, 0.5, 1.0),
+            TiledCorners::Right => SnapCell::new(0.5, 0.0, 0.5, 1.0),
+            TiledCorners::TopLeft => SnapCell::new(0.0, 0.0, 0.5, 0.5),
+            TiledCorners::TopRight => SnapCell::new(0.5, 0.0, 0.5, 0.5),
+            TiledCorners::BottomLeft => SnapCell::new(0.0, 0.5, 0.5, 0.5),
+            TiledCorners::BottomRight => SnapCell::new(0.5, 0.5, 0.5, 0.5),
+        }
+    }
+
+    /// Where this snapped state lands on `work_area`.
+    ///
+    /// Delegates to [`SnapCell::relative_geometry`] so drag-to-edge snapping and the layout
+    /// strip cannot place the same half of the screen in two different rectangles.
+    pub fn relative_geometry(
+        self,
+        work_area: Rectangle<i32, Logical>,
+        gaps: (i32, i32),
+    ) -> Rectangle<i32, Local> {
+        self.as_cell().relative_geometry(work_area, gaps)
     }
 }
 
@@ -179,82 +208,128 @@ pub const SNAP_LAYOUTS: &[SnapLayout] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::layout::floating::TiledCorners;
 
     /// Offset so that an origin dropped somewhere in the arithmetic shows up instead of
-    /// cancelling out, and evenly sized - see [`odd_area`].
-    fn area() -> Rectangle<i32, Logical> {
-        Rectangle::new(Point::from((36, 20)), Size::from((1920, 1080)))
+    /// cancelling out; one even and one odd size, because the fractions divide differently.
+    const AREAS: [(i32, i32, i32, i32); 2] = [(36, 20, 1920, 1080), (37, 21, 1920, 1053)];
+    const GAPS: [i32; 5] = [0, 2, 4, 8, 16];
+
+    fn areas() -> impl Iterator<Item = Rectangle<i32, Logical>> {
+        AREAS
+            .into_iter()
+            .map(|(x, y, w, h)| Rectangle::new(Point::from((x, y)), Size::from((w, h))))
     }
 
-    /// Odd height, where this module and `TiledCorners` legitimately disagree by a pixel.
-    fn odd_area() -> Rectangle<i32, Logical> {
-        Rectangle::new(Point::from((37, 21)), Size::from((1920, 1053)))
-    }
-
-    const CORNER_CASES: &[(SnapCell, TiledCorners)] = &[
-        (SnapCell::new(0.0, 0.0, 1.0, 0.5), TiledCorners::Top),
-        (SnapCell::new(0.0, 0.5, 1.0, 0.5), TiledCorners::Bottom),
-        (SnapCell::new(0.0, 0.0, 0.5, 1.0), TiledCorners::Left),
-        (SnapCell::new(0.5, 0.0, 0.5, 1.0), TiledCorners::Right),
-        (SnapCell::new(0.0, 0.0, 0.5, 0.5), TiledCorners::TopLeft),
-        (SnapCell::new(0.5, 0.0, 0.5, 0.5), TiledCorners::TopRight),
-        (SnapCell::new(0.0, 0.5, 0.5, 0.5), TiledCorners::BottomLeft),
-        (SnapCell::new(0.5, 0.5, 0.5, 0.5), TiledCorners::BottomRight),
-    ];
-
-    /// The whole point of the fraction form is that it does not move windows that the existing
-    /// edge snapping already places. If this fails, drag-to-edge behaviour changed.
-    ///
-    /// Even gaps only: `TiledCorners` mixes `inner / 2` and `inner * 3 / 2` in integer
-    /// arithmetic, so an odd gap rounds differently there than anywhere else. The theme ships
-    /// even values, and reproducing that bug-for-bug is not worth it.
+    /// A snapped window touches the screen. The gap is for the space between two windows -
+    /// there is nothing between a window and the edge of the work area for it to separate,
+    /// and it is what lets the corners that touch the edge be squared.
     #[test]
-    fn matches_tiled_corners() {
-        for inner in [0, 2, 4, 8, 16] {
-            for (cell, corner) in CORNER_CASES {
-                assert_eq!(
-                    cell.relative_geometry(area(), (0, inner)),
-                    corner.relative_geometry(area(), (0, inner)),
-                    "cell {cell:?} vs {corner:?} at gap {inner}"
-                );
-            }
-        }
-    }
-
-    /// On an odd-sized work area the two disagree by exactly one pixel, and the disagreement
-    /// is ours to keep: `TiledCorners` derives a half from `h / 2`, which truncates and leaves
-    /// the last row unused, while a cell is measured from its far edge so the halves meet and
-    /// the area is filled. Measuring from the far edge is what keeps the thirds - whose
-    /// fractions never divide evenly - from overlapping or leaving a seam.
-    #[test]
-    fn differs_from_tiled_corners_by_at_most_a_pixel_when_odd() {
-        for inner in [0, 2, 4, 8, 16] {
-            for (cell, corner) in CORNER_CASES {
-                let ours = cell.relative_geometry(odd_area(), (0, inner));
-                let theirs = corner.relative_geometry(odd_area(), (0, inner));
-                for (a, b, what) in [
-                    (ours.loc.x, theirs.loc.x, "x"),
-                    (ours.loc.y, theirs.loc.y, "y"),
-                    (ours.size.w, theirs.size.w, "width"),
-                    (ours.size.h, theirs.size.h, "height"),
-                ] {
-                    assert!(
-                        (a - b).abs() <= 1,
-                        "{what} of {cell:?} vs {corner:?} at gap {inner}: {a} vs {b}"
-                    );
+    fn cells_are_flush_with_the_work_area() {
+        for work_area in areas() {
+            for inner in GAPS {
+                for layout in SNAP_LAYOUTS {
+                    for cell in layout.cells {
+                        let geo = cell.relative_geometry(work_area, (0, inner));
+                        let area = work_area.as_local();
+                        if cell.x == 0.0 {
+                            assert_eq!(geo.loc.x, area.loc.x, "{} left edge", layout.id);
+                        }
+                        if cell.y == 0.0 {
+                            assert_eq!(geo.loc.y, area.loc.y, "{} top edge", layout.id);
+                        }
+                        if cell.x + cell.w == 1.0 {
+                            assert_eq!(
+                                geo.loc.x + geo.size.w,
+                                area.loc.x + area.size.w,
+                                "{} right edge",
+                                layout.id
+                            );
+                        }
+                        if cell.y + cell.h == 1.0 {
+                            assert_eq!(
+                                geo.loc.y + geo.size.h,
+                                area.loc.y + area.size.h,
+                                "{} bottom edge",
+                                layout.id
+                            );
+                        }
+                    }
                 }
             }
         }
     }
 
-    /// Every cell that is geometrically a known snapped state must report itself as one, or
-    /// dropping on the strip would place a window in the same rectangle as a drag-to-edge but
-    /// leave it in a different internal state.
+    /// Cells of one layout must not overlap and must stay inside the work area - including the
+    /// thirds, where the fractions do not divide evenly.
     #[test]
-    fn known_cells_map_back_to_tiled_corners() {
-        for (cell, corner) in CORNER_CASES {
-            assert_eq!(cell.as_tiled_corner(), Some(*corner), "for {cell:?}");
+    fn cells_tile_without_overlap() {
+        for work_area in areas() {
+            for inner in GAPS {
+                for layout in SNAP_LAYOUTS {
+                    let rects: Vec<_> = layout
+                        .cells
+                        .iter()
+                        .map(|c| c.relative_geometry(work_area, (0, inner)))
+                        .collect();
+                    let area = work_area.as_local();
+
+                    for (i, a) in rects.iter().enumerate() {
+                        assert!(
+                            a.loc.x >= area.loc.x
+                                && a.loc.y >= area.loc.y
+                                && a.loc.x + a.size.w <= area.loc.x + area.size.w
+                                && a.loc.y + a.size.h <= area.loc.y + area.size.h,
+                            "{} cell {i} escapes the work area at gap {inner}: {a:?}",
+                            layout.id
+                        );
+                        for (j, b) in rects.iter().enumerate().skip(i + 1) {
+                            assert!(
+                                a.intersection(*b).is_none(),
+                                "{} cells {i} and {j} overlap at gap {inner}: {a:?} {b:?}",
+                                layout.id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Two windows sharing an internal edge are separated by the whole gap - each gives up
+    /// half of it.
+    #[test]
+    fn neighbours_are_separated_by_the_gap() {
+        for work_area in areas() {
+            for inner in GAPS {
+                let left =
+                    SnapCell::new(0.0, 0.0, 0.5, 1.0).relative_geometry(work_area, (0, inner));
+                let right =
+                    SnapCell::new(0.5, 0.0, 0.5, 1.0).relative_geometry(work_area, (0, inner));
+                assert_eq!(
+                    right.loc.x - (left.loc.x + left.size.w),
+                    inner - inner % 2,
+                    "gap between halves at inner={inner}"
+                );
+            }
+        }
+    }
+
+    /// Every snapped state that already existed still has exactly one cell describing it, and
+    /// a cell that is one reports itself as such - dropping on the strip must leave a window in
+    /// the same internal state a drag to that edge does.
+    #[test]
+    fn tiled_corners_round_trip() {
+        for corner in [
+            TiledCorners::Top,
+            TiledCorners::Bottom,
+            TiledCorners::Left,
+            TiledCorners::Right,
+            TiledCorners::TopLeft,
+            TiledCorners::TopRight,
+            TiledCorners::BottomLeft,
+            TiledCorners::BottomRight,
+        ] {
+            assert_eq!(corner.as_cell().as_tiled_corner(), Some(corner));
         }
         // A third is not any of them.
         assert_eq!(
@@ -281,41 +356,6 @@ mod tests {
                     );
                     seen.push(cell.x);
                     current = cell.x;
-                }
-            }
-        }
-    }
-
-    /// Cells of one layout must not overlap, must stay inside the work area, and must leave
-    /// the gap between them - including the thirds, where the fractions do not divide evenly.
-    #[test]
-    fn cells_tile_without_overlap() {
-        for work_area in [area(), odd_area()] {
-            for inner in [0, 2, 4, 8, 16] {
-                for layout in SNAP_LAYOUTS {
-                    let rects: Vec<_> = layout
-                        .cells
-                        .iter()
-                        .map(|c| c.relative_geometry(work_area, (0, inner)))
-                        .collect();
-
-                    for (i, a) in rects.iter().enumerate() {
-                        assert!(
-                            a.loc.x >= work_area.loc.x + inner
-                                && a.loc.y >= work_area.loc.y + inner
-                                && a.loc.x + a.size.w <= work_area.loc.x + work_area.size.w - inner
-                                && a.loc.y + a.size.h <= work_area.loc.y + work_area.size.h - inner,
-                            "{} cell {i} escapes the work area at gap {inner}: {a:?}",
-                            layout.id
-                        );
-                        for (j, b) in rects.iter().enumerate().skip(i + 1) {
-                            assert!(
-                                a.intersection(*b).is_none(),
-                                "{} cells {i} and {j} overlap at gap {inner}: {a:?} {b:?}",
-                                layout.id
-                            );
-                        }
-                    }
                 }
             }
         }
