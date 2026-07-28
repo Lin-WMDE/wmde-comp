@@ -508,11 +508,6 @@ impl CosmicStack {
             .with_program(|p| p.tiled.store(tiled, Ordering::Release));
     }
 
-    /// WMDE: the compositor's own view, see [`CosmicWindow::is_tiled`].
-    pub fn is_tiled(&self) -> bool {
-        self.0.with_program(|p| p.tiled.load(Ordering::Acquire))
-    }
-
     pub fn surfaces(&self) -> impl Iterator<Item = CosmicSurface> {
         self.0.with_program(|p| {
             p.windows

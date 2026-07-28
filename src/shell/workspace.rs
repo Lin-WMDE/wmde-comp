@@ -7,7 +7,7 @@ use crate::{
     shell::{
         ANIMATION_DURATION, OverviewMode, SeatMoveGrabState,
         layout::{
-            floating::{FloatingLayout, TiledCorners},
+            floating::{FloatingLayout, snap::SnapCell},
             tiling::TilingLayout,
         },
     },
@@ -185,7 +185,7 @@ impl MinimizedWindow {
     pub fn unmaximize(
         &mut self,
         original_geometry: Rectangle<i32, Local>,
-        original_snapped: Option<TiledCorners>,
+        original_snapped: Option<SnapCell>,
     ) {
         match self {
             MinimizedWindow::Fullscreen { .. } => {}
@@ -304,7 +304,7 @@ pub struct FloatingRestoreData {
     pub geometry: Rectangle<i32, Local>,
     pub output_size: Size<i32, Logical>,
     pub was_maximized: bool,
-    pub was_snapped: Option<TiledCorners>,
+    pub was_snapped: Option<SnapCell>,
 }
 
 impl FloatingRestoreData {
@@ -1025,7 +1025,7 @@ impl Workspace {
                         );
                         // Re-apply the snap if the window was snapped before maximizing
                         if let Some(corners) = state.original_snapped {
-                            self.floating_layer.snap_to_corner(elem, &corners);
+                            self.floating_layer.snap_to_cell(elem, &corners);
                         }
                         Some(state.original_geometry)
                     }
@@ -1185,7 +1185,7 @@ impl Workspace {
                     std::mem::drop(state);
                     self.floating_layer.map_maximized(window, geometry, true);
                 } else if let Some(corners) = previous.was_snapped {
-                    self.floating_layer.snap_to_corner(&window, &corners);
+                    self.floating_layer.snap_to_cell(&window, &corners);
                 }
 
                 None

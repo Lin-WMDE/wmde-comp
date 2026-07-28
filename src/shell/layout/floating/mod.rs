@@ -133,7 +133,7 @@ impl Animation {
         &self,
         output_geometry: Rectangle<i32, Logical>,
         current_geometry: Rectangle<i32, Local>,
-        tiled_state: Option<&TiledCorners>,
+        tiled_state: Option<&snap::SnapCell>,
         gaps: (i32, i32),
     ) -> Rectangle<i32, Local> {
         let (duration, target_rect) = match self {
@@ -612,12 +612,7 @@ impl FloatingLayout {
             );
         }
 
-        // WMDE: `is_snapped` as well as `floating_tiled`, because the thirds and the composite
-        // layouts have no TiledCorners equivalent and leave that field empty. Without it they
-        // fell into the branch below, which records the *snapped* geometry as the one to go
-        // back to - so dragging a window out of them kept the snapped size.
-        let was_snapped = window.floating_tiled.lock().unwrap().take().is_some();
-        if was_snapped || window.is_snapped() {
+        if window.floating_tiled.lock().unwrap().take().is_some() {
             if let Some(last_size) = window.last_geometry.lock().unwrap().map(|geo| geo.size) {
                 let geometry = Rectangle::new(mapped_geometry.loc, last_size);
                 window.set_tiled(false);
@@ -1111,7 +1106,11 @@ impl FloatingLayout {
                     current_geometry
                 };
 
-                let new_state = match (direction, &*tiled_state) {
+                // WMDE: the keyboard moves are defined between the eight named states, so a
+                // cell that is not one of them - a third, a composite - counts as unsnapped
+                // here and the move lands on the plain half in that direction.
+                let named = tiled_state.and_then(|cell| cell.as_tiled_corner());
+                let new_state = match (direction, &named) {
                     // figure out if we are moving between workspaces/outputs
                     (
                         Direction::Up,
@@ -1203,7 +1202,7 @@ impl FloatingLayout {
                     *element.last_geometry.lock().unwrap() = last_geometry;
                 }
 
-                *tiled_state = Some(new_state);
+                *tiled_state = Some(new_state.as_cell());
                 std::mem::drop(tiled_state);
 
                 element.moved_since_mapped.store(true, Ordering::SeqCst);
@@ -1600,7 +1599,7 @@ impl FloatingLayout {
     }
 
     pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
-        *mapped.floating_tiled.lock().unwrap() = Some(*corners);
+        *mapped.floating_tiled.lock().unwrap() = Some(corners.as_cell());
         mapped.set_tiled(true);
         let snapped_geo = self.snapped_geometry(corners);
         let output = self.space.outputs().next().unwrap().clone();
@@ -1665,7 +1664,7 @@ impl FloatingLayout {
 
         // Remember where the window was before it was tiled, so restoring it has somewhere to
         // go - move_element does the same on the first snap.
-        if !mapped.is_snapped() {
+        if mapped.floating_tiled.lock().unwrap().is_none() {
             let last_geometry = mapped
                 .maximized_state
                 .lock()
@@ -1676,7 +1675,7 @@ impl FloatingLayout {
             *mapped.last_geometry.lock().unwrap() = last_geometry;
         }
 
-        *mapped.floating_tiled.lock().unwrap() = cell.as_tiled_corner();
+        *mapped.floating_tiled.lock().unwrap() = Some(*cell);
         mapped.set_tiled(true);
         mapped.set_maximized(false);
         mapped.moved_since_mapped.store(true, Ordering::SeqCst);

@@ -2748,7 +2748,7 @@ impl Shell {
                         true,
                     );
                 } else if let Some(corners) = was_snapped {
-                    workspace.floating_layer.snap_to_corner(&window, &corners);
+                    workspace.floating_layer.snap_to_cell(&window, &corners);
                 }
             }
             Some(FullscreenRestoreState::Tiling {
@@ -3520,7 +3520,7 @@ impl Shell {
                     .floating_layer
                     .map_maximized(mapped.clone(), geometry, false);
             } else if let Some(corners) = was_snapped {
-                to_workspace.floating_layer.snap_to_corner(mapped, &corners);
+                to_workspace.floating_layer.snap_to_cell(mapped, &corners);
             }
         } else {
             for mapped in to_workspace
@@ -4551,7 +4551,7 @@ impl Shell {
                     );
                     // Re-apply the snap if the window was snapped when it was maximized.
                     if let Some(corners) = state.original_snapped {
-                        set.sticky_layer.snap_to_corner(mapped, &corners);
+                        set.sticky_layer.snap_to_cell(mapped, &corners);
                     }
                 }
                 Some(state.original_geometry.size.as_logical())

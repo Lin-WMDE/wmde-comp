@@ -74,7 +74,7 @@ use super::{
     ManagedLayer,
     focus::target::PointerFocusTarget,
     layout::{
-        floating::{ResizeState, TiledCorners},
+        floating::{ResizeState, snap::SnapCell},
         tiling::NodeDesc,
     },
 };
@@ -91,7 +91,7 @@ space_elements! {
 pub struct MaximizedState {
     pub original_geometry: Rectangle<i32, Local>,
     pub original_layer: ManagedLayer,
-    pub original_snapped: Option<TiledCorners>,
+    pub original_snapped: Option<SnapCell>,
 }
 
 #[derive(Clone)]
@@ -107,7 +107,13 @@ pub struct CosmicMapped {
     pub(super) resize_state: Arc<Mutex<Option<ResizeState>>>,
     pub last_geometry: Arc<Mutex<Option<Rectangle<i32, Local>>>>,
     pub moved_since_mapped: Arc<AtomicBool>,
-    pub floating_tiled: Arc<Mutex<Option<TiledCorners>>>,
+    /// WMDE: the cell this window is snapped into, if it is.
+    ///
+    /// Was `Option<TiledCorners>`, which could only describe the eight halves and quarters -
+    /// the thirds and the composites from the layout strip had no value to store, so every
+    /// piece of behaviour keyed on this field (restoring the pre-snap geometry, the corner
+    /// squaring, the animation target) silently did not apply to them.
+    pub floating_tiled: Arc<Mutex<Option<SnapCell>>>,
     //sticky
     pub previous_layer: Arc<Mutex<Option<ManagedLayer>>>,
 
@@ -347,20 +353,6 @@ impl CosmicMapped {
             CosmicMappedInternal::Stack(s) => s.set_tiled(tiled),
             CosmicMappedInternal::Window(w) => w.set_tiled(tiled),
             _ => unreachable!(),
-        }
-    }
-
-    /// WMDE: the compositor's own view of whether this window is snapped.
-    ///
-    /// Not [`Self::is_tiled`], which reads the state echoed back by the client after it acks a
-    /// configure. This is the flag the compositor maintains itself, and it is true for the
-    /// layouts that have no `TiledCorners` equivalent - thirds and the composites - which is
-    /// what `floating_tiled` alone cannot answer.
-    pub fn is_snapped(&self) -> bool {
-        match &self.element {
-            CosmicMappedInternal::Window(w) => w.is_tiled(),
-            CosmicMappedInternal::Stack(s) => s.is_tiled(),
-            _ => false,
         }
     }
 
