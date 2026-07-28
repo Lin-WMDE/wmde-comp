@@ -683,7 +683,23 @@ impl CosmicWindow {
                 [0; 4]
             };
 
-            match (has_ssd, clip) {
+            // WMDE: whatever the branches below decide, a corner touching the edge of the
+            // screen is square. They take the MAX of the theme radius and the client's hint,
+            // so a client asking for zero on a flush corner was being overridden right back to
+            // the theme's rounding - which is why the window kept its rounded corners no
+            // matter what libcosmic sent.
+            let square_flush = |corners: [u8; 4]| {
+                let [top, right, bottom, left] = p.window.tiled_edges();
+                let keep = |flush: bool, r: u8| if flush { 0 } else { r };
+                [
+                    keep(top || left, corners[0]),
+                    keep(top || right, corners[1]),
+                    keep(bottom || right, corners[2]),
+                    keep(bottom || left, corners[3]),
+                ]
+            };
+
+            square_flush(match (has_ssd, clip) {
                 (has_ssd, true) => {
                     let mut corners = p.window.corner_radius(geometry_size).unwrap_or(radii);
 
@@ -711,7 +727,7 @@ impl CosmicWindow {
                     .window
                     .corner_radius(geometry_size)
                     .unwrap_or([default_radius; 4]),
-            }
+            })
         })
     }
 }

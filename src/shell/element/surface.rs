@@ -452,6 +452,22 @@ impl CosmicSurface {
         }
     }
 
+    /// WMDE: the edges currently marked as flush, `[top, right, bottom, left]`.
+    pub fn tiled_edges(&self) -> [bool; 4] {
+        match self.0.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => with_toplevel_state(toplevel, false, |state| {
+                let has = |flag| state.is_some_and(|state| state.states.contains(flag));
+                [
+                    has(ToplevelState::TiledTop),
+                    has(ToplevelState::TiledRight),
+                    has(ToplevelState::TiledBottom),
+                    has(ToplevelState::TiledLeft),
+                ]
+            }),
+            WindowSurface::X11(_surface) => [false; 4],
+        }
+    }
+
     /// WMDE: which edges of this window are flush against the edge of the screen's work area,
     /// as `[top, right, bottom, left]`.
     ///
