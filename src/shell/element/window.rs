@@ -437,6 +437,10 @@ impl CosmicWindow {
                     radii[3] = 0;
                 }
             }
+            // WMDE: square, to match the window this shadow sits behind.
+            if is_tiled {
+                radii = [0; 4];
+            }
 
             let mut geo = SpaceElement::geometry(&p.window).to_f64();
             if has_ssd {
@@ -508,6 +512,13 @@ impl CosmicWindow {
                 radii[1] = 0;
                 radii[3] = 0;
             }
+        }
+        // WMDE: a snapped window has square corners, all four of them. This is the radius that
+        // actually clips the window on screen - it is derived here from the theme and never
+        // passes through `corner_radius()`, which only feeds the focus indicator and the
+        // shadow.
+        if is_tiled {
+            radii = [0; 4];
         }
 
         let window_loc = if has_ssd {
