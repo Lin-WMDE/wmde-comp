@@ -138,6 +138,15 @@ pub const SNAP_LAYOUTS: &[SnapLayout] = &[
             SnapCell::new(0.5, 0.5, 0.5, 0.5),
         ],
     },
+    // Two columns, the left one twice the width of the right. Measured off the reference:
+    // 63px against 31px in a 98px group.
+    SnapLayout {
+        id: "two-thirds",
+        cells: &[
+            SnapCell::new(0.0, 0.0, 2.0 / 3.0, 1.0),
+            SnapCell::new(2.0 / 3.0, 0.0, 1.0 / 3.0, 1.0),
+        ],
+    },
     // One large left, two stacked right.
     SnapLayout {
         id: "left-big",

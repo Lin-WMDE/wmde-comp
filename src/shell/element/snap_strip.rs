@@ -53,8 +53,11 @@ pub struct SnapStrip {
     elem: IcedElement<SnapStripInternal>,
     /// Where the strip sits, in output-local coordinates.
     geometry: Rectangle<i32, Logical>,
-    /// Cell rectangles in the same space as `geometry`, parallel to `SNAP_LAYOUTS`.
-    cells: Vec<Vec<Rectangle<i32, Logical>>>,
+    /// Hit areas as half-open bounds `(x0, y0, x1, y1)` in the same space as `geometry`,
+    /// parallel to `SNAP_LAYOUTS`. Deliberately not `Rectangle`: whether `Rectangle::contains`
+    /// includes its far edge decides between neighbouring cells sharing a pixel and the last
+    /// row belonging to nothing, and neither is worth depending on.
+    cells: Vec<Vec<(i32, i32, i32, i32)>>,
 }
 
 impl SnapStrip {
@@ -79,6 +82,7 @@ impl SnapStrip {
             SnapStripInternal {
                 hovered: None,
                 thumb: (thumb_w, thumb_h),
+                size: (width, height),
             },
             size,
             evlh,
@@ -103,7 +107,7 @@ impl SnapStrip {
                 layout
                     .cells
                     .iter()
-                    .map(|c| thumb_cell_rect(*c, origin_x, origin_y, thumb_w, thumb_h))
+                    .map(|c| thumb_cell_bounds(*c, origin_x, origin_y, thumb_w, thumb_h))
                     .collect(),
             );
         }
@@ -124,17 +128,26 @@ impl SnapStrip {
         self.cells.iter().enumerate().find_map(|(l, cells)| {
             cells
                 .iter()
-                .position(|rect| rect.contains(point))
+                .position(|&(x0, y0, x1, y1)| {
+                    point.x >= x0 && point.x < x1 && point.y >= y0 && point.y < y1
+                })
                 .map(|c| (l, c))
         })
     }
 
-    /// Paint `hovered` as the highlighted cell. Cheap when unchanged - the element only
-    /// redraws when the value actually differs.
+    /// Paint `hovered` as the highlighted cell.
+    ///
+    /// `queue_message` only enqueues; the queue is drained by `IcedElement`'s own pointer and
+    /// touch handlers, and during a move grab this element gets no pointer events at all - the
+    /// grab holds the pointer. So the update has to be driven by hand, and the cached buffer
+    /// dropped, or the message sits in the queue and nothing ever repaints.
     pub fn set_hovered(&self, hovered: Option<(usize, usize)>) {
-        if self.elem.with_program(|p| p.hovered) != hovered {
-            self.elem.queue_message(Message::Hover(hovered));
+        if self.elem.with_program(|p| p.hovered) == hovered {
+            return;
         }
+        self.elem.queue_message(Message::Hover(hovered));
+        self.elem.force_update();
+        self.elem.force_redraw();
     }
 
     pub fn push_render_elements<R>(
@@ -171,25 +184,23 @@ impl SnapStrip {
     }
 }
 
-/// One cell's rectangle inside a thumbnail whose top-left is at `(ox, oy)`.
+/// Half-open hit bounds `(x0, y0, x1, y1)` for a cell of the thumbnail at `(ox, oy)`.
 ///
-/// Shared by the hit-test table and the view below, so the two cannot disagree: the view lays
-/// a cell out as a fixed-size box padded by half the gap, which is exactly this rectangle.
-fn thumb_cell_rect(
+/// The full cell, with no gap: the cells of a thumbnail must tile it completely. The first
+/// version used the drawn rectangle here, which left 3px dead strips between cells where
+/// aiming selected nothing - on screen that is indistinguishable from the strip not working.
+fn thumb_cell_bounds(
     cell: SnapCell,
     ox: f32,
     oy: f32,
     thumb_w: f32,
     thumb_h: f32,
-) -> Rectangle<i32, Logical> {
-    let half = CELL_GAP / 2.0;
-    let x0 = ox + (cell.x as f32 * thumb_w) + half;
-    let y0 = oy + (cell.y as f32 * thumb_h) + half;
-    let x1 = ox + ((cell.x + cell.w) as f32 * thumb_w) - half;
-    let y1 = oy + ((cell.y + cell.h) as f32 * thumb_h) - half;
-    Rectangle::new(
-        Point::from((x0.round() as i32, y0.round() as i32)),
-        Size::from(((x1 - x0).round() as i32, (y1 - y0).round() as i32)),
+) -> (i32, i32, i32, i32) {
+    (
+        (ox + cell.x as f32 * thumb_w).round() as i32,
+        (oy + cell.y as f32 * thumb_h).round() as i32,
+        (ox + (cell.x + cell.w) as f32 * thumb_w).round() as i32,
+        (oy + (cell.y + cell.h) as f32 * thumb_h).round() as i32,
     )
 }
 
@@ -201,6 +212,7 @@ pub enum Message {
 pub struct SnapStripInternal {
     hovered: Option<(usize, usize)>,
     thumb: (f32, f32),
+    size: (f32, f32),
 }
 
 impl Program for SnapStripInternal {
@@ -280,15 +292,17 @@ impl Program for SnapStripInternal {
                     shadow: Default::default(),
                 }
             }))
-            .width(Length::Shrink)
-            .height(Length::Shrink)
+            // Fixed, not Shrink: the hit-test table is computed from these same numbers, so
+            // the widget must not be free to settle at some other size.
+            .width(Length::Fixed(self.size.0))
+            .height(Length::Fixed(self.size.1))
             .into()
     }
 }
 
 /// One cell of a thumbnail: a fixed-size box padded by half the gap, with the styled fill
-/// inside it. The padding is what produces the gap, and it is what makes the drawn rectangle
-/// identical to [`thumb_cell_rect`].
+/// inside it. The padding is what draws the gap; the box itself is the full cell, which is
+/// exactly the area [`thumb_cell_bounds`] hit-tests, so what lights up is what gets picked.
 fn cell_box(
     cell: SnapCell,
     thumb_w: f32,
@@ -329,4 +343,33 @@ fn cell_style(hovered: bool) -> theme::Container<'static> {
             shadow: Default::default(),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every point of a thumbnail must belong to exactly one cell: no dead strips, no pixel
+    /// claimed twice.
+    #[test]
+    fn hit_areas_tile_the_thumbnail() {
+        let (ox, oy, w, h) = (100.0f32, 50.0f32, 80.0f32, 44.0f32);
+        for layout in SNAP_LAYOUTS {
+            let bounds: Vec<_> = layout
+                .cells
+                .iter()
+                .map(|c| thumb_cell_bounds(*c, ox, oy, w, h))
+                .collect();
+
+            for px in (ox.round() as i32)..(ox + w).round() as i32 {
+                for py in (oy.round() as i32)..(oy + h).round() as i32 {
+                    let hits = bounds
+                        .iter()
+                        .filter(|&&(x0, y0, x1, y1)| px >= x0 && px < x1 && py >= y0 && py < y1)
+                        .count();
+                    assert_eq!(hits, 1, "{} at ({px},{py}) is in {hits} cells", layout.id);
+                }
+            }
+        }
+    }
 }
