@@ -1619,12 +1619,22 @@ impl FloatingLayout {
         work_area: Rectangle<i32, Logical>,
     ) {
         let work_area = work_area.as_local();
-        mapped.set_tiled_edges([
+        let edges = [
             geo.loc.y <= work_area.loc.y,
             geo.loc.x + geo.size.w >= work_area.loc.x + work_area.size.w,
             geo.loc.y + geo.size.h >= work_area.loc.y + work_area.size.h,
             geo.loc.x <= work_area.loc.x,
-        ]);
+        ];
+        tracing::debug!(
+            ?geo,
+            ?work_area,
+            top = edges[0],
+            right = edges[1],
+            bottom = edges[2],
+            left = edges[3],
+            "flush edges"
+        );
+        mapped.set_tiled_edges(edges);
     }
 
     /// WMDE: place `mapped` in `cell`, as picked from the drag-to-top layout strip.

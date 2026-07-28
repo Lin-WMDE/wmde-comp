@@ -351,11 +351,12 @@ impl CosmicMapped {
     }
 
     /// WMDE: which edges sit flush against the work area, `[top, right, bottom, left]`.
-    /// A stack has no single surface to mark, so it is left alone.
+    ///
+    /// Goes through [`Self::active_window`] rather than matching on the element: a stacked
+    /// window is just as entitled to square its corners, and a variant this silently skipped
+    /// would look exactly like the states never being sent.
     pub fn set_tiled_edges(&self, edges: [bool; 4]) {
-        if let CosmicMappedInternal::Window(w) = &self.element {
-            w.set_tiled_edges(edges);
-        }
+        self.active_window().set_tiled_edges(edges);
     }
 
     pub fn is_tiled(&self, pending: bool) -> Option<bool> {
