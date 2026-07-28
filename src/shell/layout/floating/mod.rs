@@ -1680,6 +1680,30 @@ impl FloatingLayout {
         mapped.configure();
     }
 
+    /// WMDE: place `mapped` in `cell`, as picked from the drag-to-top layout strip.
+    ///
+    /// Cells that are a known snapped state go through [`Self::snap_to_corner`], so a window
+    /// dropped on the "left half" of the strip ends up in exactly the state a drag to the left
+    /// edge produces. The rest - thirds, and the composite layouts - have no such state, so
+    /// they are placed as geometry and left untiled.
+    pub fn snap_to_cell(&self, mapped: &CosmicMapped, cell: &snap::SnapCell) {
+        if let Some(corner) = cell.as_tiled_corner() {
+            self.snap_to_corner(mapped, &corner);
+            return;
+        }
+
+        *mapped.floating_tiled.lock().unwrap() = None;
+        let output = self.space.outputs().next().unwrap().clone();
+        let geo = {
+            let layers = layer_map_for_output(&output);
+            let non_exclusive = layers.non_exclusive_zone();
+            std::mem::drop(layers);
+            cell.relative_geometry(non_exclusive, self.gaps())
+        };
+        mapped.set_geometry(geo.to_global(&output));
+        mapped.configure();
+    }
+
     fn snapped_geometry(&self, corners: &TiledCorners) -> Rectangle<i32, Local> {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);

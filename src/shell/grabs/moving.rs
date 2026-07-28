@@ -6,9 +6,10 @@ use crate::{
     },
     shell::{
         CosmicMapped, CosmicSurface, Direction, ManagedLayer,
+        element::snap_strip::{REVEAL_HEIGHT, SnapStrip},
         element::{CosmicMappedRenderElement, stack_hover::StackHover},
         focus::target::{KeyboardFocusTarget, PointerFocusTarget},
-        layout::floating::TiledCorners,
+        layout::floating::{TiledCorners, snap::SNAP_LAYOUTS},
     },
     utils::prelude::*,
     wayland::protocols::toplevel_info::{toplevel_enter_output, toplevel_enter_workspace},
@@ -60,6 +61,10 @@ pub struct MoveGrabState {
     start: Instant,
     previous: ManagedLayer,
     snapping_zone: Option<SnappingZone>,
+    // WMDE: the layout strip shown while the pointer is at the top edge, and the cell it is
+    // currently over. `snap_pick` takes precedence over `snapping_zone` on release.
+    snap_strip: Option<SnapStrip>,
+    snap_pick: Option<(usize, usize)>,
     stacking_indicator: Option<(StackHover, Point<i32, Logical>)>,
     location: Point<f64, Logical>,
     cursor_output: Output,
@@ -111,6 +116,19 @@ impl MoveGrabState {
         let render_location = self.location.to_i32_round() - output.geometry().loc.as_logical()
             + self.window_offset
             - scaling_offset;
+
+        // WMDE: the layout strip sits above the dragged window, like the Windows 11 flyout.
+        if let Some(strip) = self.snap_strip.as_ref()
+            && &self.cursor_output == output
+        {
+            strip.push_render_elements(
+                renderer,
+                strip.geometry().loc.to_physical_precise_round(output_scale),
+                output_scale,
+                1.0,
+                &mut |elem| push(elem.into()),
+            );
+        }
 
         for (indicator, location) in self.stacking_indicator.iter() {
             indicator.push_render_elements(
@@ -220,11 +238,22 @@ impl MoveGrabState {
         let gaps = (theme.gaps.0 as i32, theme.gaps.1 as i32);
         let thickness = self.indicator_thickness.max(1);
 
-        if let Some(t) = &self.snapping_zone
+        // WMDE: a cell picked from the strip previews as the rectangle it will land in, using
+        // the same indicator the edge zones use, so the two read identically.
+        let preview_geometry = self
+            .snap_pick
+            .and_then(|(l, c)| SNAP_LAYOUTS.get(l)?.cells.get(c))
+            .map(|cell| cell.relative_geometry(non_exclusive_geometry, gaps))
+            .or_else(|| {
+                self.snapping_zone
+                    .as_ref()
+                    .map(|t| t.overlay_geometry(non_exclusive_geometry, gaps))
+            });
+
+        if let Some(overlay_geometry) = preview_geometry
             && &self.cursor_output == output
         {
             let base_color = theme.palette.neutral_9;
-            let overlay_geometry = t.overlay_geometry(non_exclusive_geometry, gaps);
 
             push(
                 IndicatorShader::element(
@@ -252,7 +281,7 @@ impl MoveGrabState {
                 BackdropShader::element(
                     renderer,
                     Key::Window(Usage::SnappingIndicator, self.window.key()),
-                    t.overlay_geometry(non_exclusive_geometry, gaps),
+                    overlay_geometry,
                     theme.radius_s()[0], // TODO: Fix once shaders support 4 corner radii customization
                     0.4,
                     [base_color.red, base_color.green, base_color.blue],
@@ -441,11 +470,17 @@ impl MoveGrab {
                         {
                             indicator.output_enter(output);
                         }
+                        if let Some(strip) = grab_state.snap_strip.as_ref() {
+                            strip.output_enter(output);
+                        }
                     }
                 } else if self.window_outputs.remove(output) {
                     self.window.output_leave(output);
                     if let Some(indicator) = grab_state.stacking_indicator.as_ref().map(|x| &x.0) {
                         indicator.output_leave(output);
+                    }
+                    if let Some(strip) = grab_state.snap_strip.as_ref() {
+                        strip.output_leave(output);
                     }
                 }
             }
@@ -464,6 +499,52 @@ impl MoveGrab {
                     }
                     (element, geo.loc.as_logical())
                 });
+            }
+
+            // WMDE: the layout strip. It drops down once the pointer reaches the top edge and
+            // stays for as long as the pointer is over it, so it can be aimed at; leaving both
+            // the reveal band and the strip itself puts the plain edge zones back in charge.
+            if grab_state.previous == ManagedLayer::Floating {
+                let local = location
+                    .as_global()
+                    .to_local(&current_output)
+                    .to_i32_floor();
+                let work_area = {
+                    let layers = layer_map_for_output(&current_output);
+                    layers.non_exclusive_zone()
+                };
+                let at_top = local.y < work_area.loc.y + REVEAL_HEIGHT;
+                let over_strip = grab_state
+                    .snap_strip
+                    .as_ref()
+                    .is_some_and(|s| s.geometry().contains(local.as_logical()));
+
+                if at_top || over_strip {
+                    if grab_state.snap_strip.is_none() {
+                        let strip = SnapStrip::new(
+                            state.common.event_loop_handle.clone(),
+                            work_area,
+                            state.common.theme.clone(),
+                        );
+                        for output in &self.window_outputs {
+                            strip.output_enter(output);
+                        }
+                        grab_state.snap_strip = Some(strip);
+                    }
+                } else {
+                    grab_state.snap_strip = None;
+                }
+
+                grab_state.snap_pick = grab_state
+                    .snap_strip
+                    .as_ref()
+                    .and_then(|s| s.cell_at(local.as_logical()));
+                if let Some(strip) = grab_state.snap_strip.as_ref() {
+                    strip.set_hovered(grab_state.snap_pick);
+                }
+            } else {
+                grab_state.snap_strip = None;
+                grab_state.snap_pick = None;
             }
 
             // Check for overlapping with zones
@@ -491,6 +572,12 @@ impl MoveGrab {
                     )
                 })
                 .cloned();
+
+                // While a cell is aimed at, the edge zones must not also claim the pointer -
+                // the top of the screen is exactly where they overlap the strip.
+                if grab_state.snap_pick.is_some() {
+                    grab_state.snapping_zone = None;
+                }
             }
         }
         drop(borrow);
@@ -742,6 +829,8 @@ impl MoveGrab {
             .as_logical(),
             indicator_thickness,
             start: Instant::now(),
+            snap_strip: None,
+            snap_pick: None,
             stacking_indicator: None,
             snapping_zone: None,
             previous: previous_layer,
@@ -858,6 +947,19 @@ impl Drop for MoveGrab {
                             );
 
                             if matches!(previous, ManagedLayer::Floating)
+                                && let Some(cell) = grab_state
+                                    .snap_pick
+                                    .and_then(|(l, c)| SNAP_LAYOUTS.get(l)?.cells.get(c))
+                            {
+                                // `last_geometry` holds the pre-drag geometry (set in
+                                // FloatingLayout::unmap); snap_to_cell must not lose it, or
+                                // restore-to-floating forgets where the window was.
+                                let pre_drag_geometry = *window.last_geometry.lock().unwrap();
+                                workspace.floating_layer.snap_to_cell(&window, cell);
+                                if let Some(geo) = pre_drag_geometry {
+                                    *window.last_geometry.lock().unwrap() = Some(geo);
+                                }
+                            } else if matches!(previous, ManagedLayer::Floating)
                                 && let Some(sz) = grab_state.snapping_zone
                             {
                                 // `last_geometry` was set to the pre-drag geometry(in FloatingLayout::unmap).

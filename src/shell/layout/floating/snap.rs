@@ -69,7 +69,45 @@ impl SnapCell {
     }
 }
 
+impl SnapCell {
+    /// The [`super::TiledCorners`] this cell is the same rectangle as, if there is one.
+    ///
+    /// Halves and quarters already exist as snapped states, so dropping a window on one of
+    /// those cells goes through the same path as dragging it to that edge - same recorded
+    /// state, same restore behaviour. Thirds and the composite layouts have no equivalent and
+    /// are placed as plain geometry.
+    pub fn as_tiled_corner(&self) -> Option<super::TiledCorners> {
+        use super::TiledCorners::*;
+        let eq = |a: f64, b: f64| (a - b).abs() < f64::EPSILON;
+        let full_w = eq(self.w, 1.0);
+        let full_h = eq(self.h, 1.0);
+        let half_w = eq(self.w, 0.5);
+        let half_h = eq(self.h, 0.5);
+        let left = eq(self.x, 0.0);
+        let right = eq(self.x, 0.5);
+        let top = eq(self.y, 0.0);
+        let bottom = eq(self.y, 0.5);
+
+        Some(match (left, right, top, bottom) {
+            _ if full_w && half_h && left && top => Top,
+            _ if full_w && half_h && left && bottom => Bottom,
+            _ if half_w && full_h && left && top => Left,
+            _ if half_w && full_h && right && top => Right,
+            (true, _, true, _) if half_w && half_h => TopLeft,
+            (_, true, true, _) if half_w && half_h => TopRight,
+            (true, _, _, true) if half_w && half_h => BottomLeft,
+            (_, true, _, true) if half_w && half_h => BottomRight,
+            _ => return None,
+        })
+    }
+}
+
 /// A layout offered in the strip: the cells a window can be dropped into.
+///
+/// Cells are listed **column-major** - all the cells of the leftmost column top to bottom,
+/// then the next column. Nothing about the geometry depends on the order, but the strip builds
+/// its thumbnails as a row of columns by grouping consecutive cells that share an `x`, so a
+/// layout listed row-major would draw wrong. [`layouts_are_column_major`] asserts it.
 #[derive(Debug, Clone, Copy)]
 pub struct SnapLayout {
     /// Identifier used for the render element key, so each thumbnail gets a stable one.
@@ -95,8 +133,8 @@ pub const SNAP_LAYOUTS: &[SnapLayout] = &[
         id: "quarters",
         cells: &[
             SnapCell::new(0.0, 0.0, 0.5, 0.5),
-            SnapCell::new(0.5, 0.0, 0.5, 0.5),
             SnapCell::new(0.0, 0.5, 0.5, 0.5),
+            SnapCell::new(0.5, 0.0, 0.5, 0.5),
             SnapCell::new(0.5, 0.5, 0.5, 0.5),
         ],
     },
@@ -196,6 +234,44 @@ mod tests {
                         (a - b).abs() <= 1,
                         "{what} of {cell:?} vs {corner:?} at gap {inner}: {a} vs {b}"
                     );
+                }
+            }
+        }
+    }
+
+    /// Every cell that is geometrically a known snapped state must report itself as one, or
+    /// dropping on the strip would place a window in the same rectangle as a drag-to-edge but
+    /// leave it in a different internal state.
+    #[test]
+    fn known_cells_map_back_to_tiled_corners() {
+        for (cell, corner) in CORNER_CASES {
+            assert_eq!(cell.as_tiled_corner(), Some(*corner), "for {cell:?}");
+        }
+        // A third is not any of them.
+        assert_eq!(
+            SnapCell::new(1.0 / 3.0, 0.0, 1.0 / 3.0, 1.0).as_tiled_corner(),
+            None
+        );
+    }
+
+    /// The strip draws a thumbnail as a row of columns, grouping consecutive cells that share
+    /// an `x`. A layout listed row-major would still snap correctly but would draw wrong, and
+    /// that is the sort of thing nobody notices until it is on screen.
+    #[test]
+    fn layouts_are_column_major() {
+        for layout in SNAP_LAYOUTS {
+            let mut seen: Vec<f64> = Vec::new();
+            let mut current = f64::NAN;
+            for cell in layout.cells {
+                if cell.x != current {
+                    assert!(
+                        !seen.contains(&cell.x),
+                        "{} returns to column {} after leaving it",
+                        layout.id,
+                        cell.x
+                    );
+                    seen.push(cell.x);
+                    current = cell.x;
                 }
             }
         }

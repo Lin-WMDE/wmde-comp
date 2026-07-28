@@ -56,6 +56,8 @@ pub use self::stack::CosmicStack;
 pub mod window;
 pub use self::window::CosmicWindow;
 pub mod resize_indicator;
+// WMDE: the drag-to-top layout strip.
+pub mod snap_strip;
 pub mod stack_hover;
 pub mod swap_indicator;
 
