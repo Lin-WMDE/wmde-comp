@@ -437,10 +437,46 @@ impl CosmicSurface {
         match self.0.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
                 Some(with_toplevel_state(toplevel, pending, |state| {
-                    state.is_some_and(|state| state.states.contains(ToplevelState::TiledLeft))
+                    // Any tiled edge, not just the left one: since the edges are now set
+                    // individually (see set_tiled_edges), a window snapped to the right half
+                    // has no TiledLeft and would otherwise read as not tiled at all.
+                    state.is_some_and(|state| {
+                        state.states.contains(ToplevelState::TiledLeft)
+                            || state.states.contains(ToplevelState::TiledRight)
+                            || state.states.contains(ToplevelState::TiledTop)
+                            || state.states.contains(ToplevelState::TiledBottom)
+                    })
                 }))
             }
             WindowSurface::X11(_surface) => None,
+        }
+    }
+
+    /// WMDE: which edges of this window are flush against the edge of the screen's work area,
+    /// as `[top, right, bottom, left]`.
+    ///
+    /// `set_tiled` marks all four regardless of where the window actually sits, which is what
+    /// a client sees when it decides whether to round its corners. Telling it the truth per
+    /// edge lets it square exactly the corners that touch the screen and keep the rest round -
+    /// which is what these xdg states are for.
+    pub fn set_tiled_edges(&self, edges: [bool; 4]) {
+        let [top, right, bottom, left] = edges;
+        match self.0.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => toplevel.with_pending_state(|state| {
+                for (flush, flag) in [
+                    (top, ToplevelState::TiledTop),
+                    (right, ToplevelState::TiledRight),
+                    (bottom, ToplevelState::TiledBottom),
+                    (left, ToplevelState::TiledLeft),
+                ] {
+                    if flush {
+                        state.states.set(flag);
+                    } else {
+                        state.states.unset(flag);
+                    }
+                }
+            }),
+            WindowSurface::X11(_surface) => {}
         }
     }
 

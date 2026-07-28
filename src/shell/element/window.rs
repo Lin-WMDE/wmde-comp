@@ -653,6 +653,11 @@ impl CosmicWindow {
         });
     }
 
+    /// WMDE: see [`CosmicSurface::set_tiled_edges`].
+    pub fn set_tiled_edges(&self, edges: [bool; 4]) {
+        self.0.with_program(|p| p.window.set_tiled_edges(edges));
+    }
+
     pub fn corner_radius(&self, geometry_size: Size<i32, Logical>, default_radius: u8) -> [u8; 4] {
         self.0.with_program(|p| {
             let has_ssd = p.has_ssd(false);

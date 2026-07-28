@@ -350,6 +350,14 @@ impl CosmicMapped {
         }
     }
 
+    /// WMDE: which edges sit flush against the work area, `[top, right, bottom, left]`.
+    /// A stack has no single surface to mark, so it is left alone.
+    pub fn set_tiled_edges(&self, edges: [bool; 4]) {
+        if let CosmicMappedInternal::Window(w) = &self.element {
+            w.set_tiled_edges(edges);
+        }
+    }
+
     pub fn is_tiled(&self, pending: bool) -> Option<bool> {
         let window = match &self.element {
             CosmicMappedInternal::Stack(s) => s.active(),

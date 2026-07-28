@@ -1675,9 +1675,36 @@ impl FloatingLayout {
         *mapped.floating_tiled.lock().unwrap() = Some(*corners);
         mapped.set_tiled(true);
         let snapped_geo = self.snapped_geometry(corners);
-        let output = self.space.outputs().next().unwrap();
-        mapped.set_geometry(snapped_geo.to_global(output));
+        let output = self.space.outputs().next().unwrap().clone();
+        {
+            let layers = layer_map_for_output(&output);
+            let work_area = layers.non_exclusive_zone();
+            std::mem::drop(layers);
+            self.set_flush_edges(mapped, snapped_geo, work_area);
+        }
+        mapped.set_geometry(snapped_geo.to_global(&output));
         mapped.configure();
+    }
+
+    /// WMDE: tell `mapped` which of its edges sit flush against the work area, so a client can
+    /// square exactly the corners that touch the screen and leave the rest rounded.
+    ///
+    /// "Flush" means the gap really is zero. With the theme's gaps turned up, a snapped window
+    /// stands off the screen edge and keeps all four corners round, which is the behaviour the
+    /// gap setting is asking for.
+    fn set_flush_edges(
+        &self,
+        mapped: &CosmicMapped,
+        geo: Rectangle<i32, Local>,
+        work_area: Rectangle<i32, Logical>,
+    ) {
+        let work_area = work_area.as_local();
+        mapped.set_tiled_edges([
+            geo.loc.y <= work_area.loc.y,
+            geo.loc.x + geo.size.w >= work_area.loc.x + work_area.size.w,
+            geo.loc.y + geo.size.h >= work_area.loc.y + work_area.size.h,
+            geo.loc.x <= work_area.loc.x,
+        ]);
     }
 
     /// WMDE: place `mapped` in `cell`, as picked from the drag-to-top layout strip.
@@ -1735,6 +1762,7 @@ impl FloatingLayout {
         mapped.set_maximized(false);
         mapped.moved_since_mapped.store(true, Ordering::SeqCst);
 
+        self.set_flush_edges(mapped, new_geo, output_geometry);
         self.map_internal(
             mapped.clone(),
             Some(new_geo.loc),
