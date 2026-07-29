@@ -612,7 +612,14 @@ impl FloatingLayout {
             );
         }
 
-        if window.floating_tiled.lock().unwrap().take().is_some() {
+        let snapped = window.floating_tiled.lock().unwrap().take();
+        tracing::warn!(
+            was_snapped = ?snapped,
+            last_geometry = ?*window.last_geometry.lock().unwrap(),
+            current = ?mapped_geometry,
+            "WMDE unmap"
+        );
+        if snapped.is_some() {
             if let Some(last_size) = window.last_geometry.lock().unwrap().map(|geo| geo.size) {
                 let geometry = Rectangle::new(mapped_geometry.loc, last_size);
                 window.set_tiled(false);
@@ -1664,6 +1671,7 @@ impl FloatingLayout {
 
         // Remember where the window was before it was tiled, so restoring it has somewhere to
         // go - move_element does the same on the first snap.
+        let was = *mapped.floating_tiled.lock().unwrap();
         if mapped.floating_tiled.lock().unwrap().is_none() {
             let last_geometry = mapped
                 .maximized_state
@@ -1674,6 +1682,13 @@ impl FloatingLayout {
                 .or(Some(current_geometry));
             *mapped.last_geometry.lock().unwrap() = last_geometry;
         }
+        tracing::warn!(
+            ?cell,
+            already_snapped = was.is_some(),
+            ?current_geometry,
+            last_geometry = ?*mapped.last_geometry.lock().unwrap(),
+            "WMDE snap_to_cell"
+        );
 
         *mapped.floating_tiled.lock().unwrap() = Some(*cell);
         mapped.set_tiled(true);
