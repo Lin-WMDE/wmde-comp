@@ -160,20 +160,6 @@ iced_wgpu = { path = "../libcosmic/iced/wgpu" }
 iced_widget = { path = "../libcosmic/iced/widget" }
 
 # cosmic-comp-config pins cosmic-config from the trailing-slash URL variant; patch it too.
-[patch."https://github.com/pop-os/libcosmic/"]
-cosmic-config = { path = "../libcosmic/cosmic-config" }
-cosmic-theme = { path = "../libcosmic/cosmic-theme" }
-
-# cosmic-settings-config (via cosmic-settings-daemon) pins libcosmic from the .git URL
-# variant; patch it too so a single (local) libcosmic/cosmic-config resolves in the graph.
-[patch."https://github.com/pop-os/libcosmic.git"]
-libcosmic = { path = "../libcosmic" }
-cosmic-config = { path = "../libcosmic/cosmic-config" }
-cosmic-config-derive = { path = "../libcosmic/cosmic-config-derive" }
-cosmic-theme = { path = "../libcosmic/cosmic-theme" }
-
-# Shortcuts/WindowRules config crates come from the wmde-settings-daemon fork (original
-# crate names/dirs kept). This is how wmde-comp reads the fun.wmde.Settings.* ids in lockstep.
 [patch."https://github.com/pop-os/cosmic-settings-daemon"]
 cosmic-settings-config = { path = "../wmde-settings-daemon/config" }
 cosmic-settings-daemon-config = { path = "../wmde-settings-daemon/cosmic-settings-daemon-config" }
@@ -191,5 +177,3 @@ smithay = { git = "https://github.com/smithay/smithay.git", rev = "1ed69cb" }
 [patch."https://github.com/pop-os/cosmic-randr"]
 cosmic-randr-shell = { path = "../wmde-randr/shell" }
 
-[patch."https://github.com/pop-os/cosmic-randr/"]
-cosmic-randr-shell = { path = "../wmde-randr/shell" }
