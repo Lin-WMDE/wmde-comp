@@ -21,19 +21,23 @@ impl SessionLockHandler for State {
 
         // Reject lock if sesion lock exists and is still valid
         if let Some(session_lock) = shell.session_lock.as_ref()
+            && let Some(ext_session_lock) = session_lock.ext_session_lock.as_ref()
             && self
                 .common
                 .display_handle
-                .get_client(session_lock.ext_session_lock.id())
+                .get_client(ext_session_lock.id())
                 .is_ok()
         {
             return;
         }
+        // A lock with no client is the compositor's own blank screen (see
+        // dbus::logind::session_lock_task). A real lock client is allowed to take over from
+        // it - that is the whole point of the blank being a stand-in.
 
         let ext_session_lock = locker.ext_session_lock().clone();
         locker.lock();
         shell.session_lock = Some(SessionLock {
-            ext_session_lock,
+            ext_session_lock: Some(ext_session_lock),
             surfaces: HashMap::new(),
         });
 

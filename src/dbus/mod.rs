@@ -91,6 +91,18 @@ async fn init_session(state: &DBusState) -> zbus::Result<()> {
 async fn init_system(state: &DBusState) -> zbus::Result<()> {
     let conn = state.system_conn().await?.clone();
     let evlh = state.0.evlh.clone();
+    #[cfg(feature = "logind")]
+    {
+        let conn = conn.clone();
+        let evlh = evlh.clone();
+        state.spawn(async move {
+            if let Err(err) = logind::session_lock_task(conn, evlh).await {
+                // Not fatal: without this the compositor simply has no fallback lock, which
+                // is how it behaved before. The greeter's locker is unaffected.
+                tracing::warn!(?err, "Failed to watch logind for session lock");
+            }
+        });
+    }
     state.spawn(async move {
         if let Err(err) = power_hot_plug_task(conn, evlh).await {
             tracing::warn!(?err, "Failed to initialize dbus handlers");
