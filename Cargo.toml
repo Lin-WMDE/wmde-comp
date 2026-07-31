@@ -137,11 +137,20 @@ opt-level = 2
 debug = true
 inherits = "release"
 
+# WMDE: shared release profile, see .doc/perf.
+#  - panic = "abort" drops .eh_frame and .gcc_except_table; catch_unwind stops catching,
+#    which in this stack only guards SVG parsing in iced's vector backends.
+#  - lto = "fat" with one codegen unit removes what monomorphisation duplicated.
+# The LTO half is expensive and single threaded; FAST=1 turns it off for development
+# builds without touching panic or opt-level, so behaviour still matches what ships.
+# panic is deliberately absent here: the compositor IS the session, so aborting on a
+# panic takes the whole desktop down with no chance to unwind.
 [profile.release]
 lto = "fat"
 
 # Build libcosmic/cosmic-config/cosmic-theme/iced from the local WMDE forks so the
 # renamed config-root and fun.wmde.* ids resolve consistently across the whole stack.
+codegen-units = 1
 [patch."https://github.com/pop-os/libcosmic"]
 libcosmic = { path = "../libcosmic" }
 cosmic-config = { path = "../libcosmic/cosmic-config" }
