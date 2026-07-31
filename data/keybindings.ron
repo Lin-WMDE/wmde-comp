@@ -102,14 +102,11 @@
     (modifiers: [Super], key: "space"): System(InputSourceSwitch),
     (modifiers: [Super], key: "t"): System(Terminal),
 
-    (modifiers: [Super], key: "a"): System(AppLibrary),
-    (modifiers: [Super], key: "w"): System(WorkspaceOverview),
     (modifiers: [Alt], key: "Tab"): NextWindow,
     (modifiers: [Alt, Shift], key: "Tab"): PrevWindow,
     (modifiers: [Super], key: "Tab"): NextWindow,
     (modifiers: [Super, Shift], key: "Tab"): PrevWindow,
 
-    (modifiers: [], key: "Print"): System(Screenshot),
     (modifiers: [], key: "XF86AudioRaiseVolume"): System(VolumeRaise),
     (modifiers: [], key: "XF86AudioLowerVolume"): System(VolumeLower),
     (modifiers: [], key: "XF86AudioMute"): System(Mute),
@@ -122,5 +119,4 @@
     (modifiers: [], key: "XF86PowerOff"): System(PowerOff),
     (modifiers: [], key: "XF86TouchpadToggle"): System(TouchpadToggle),
     (modifiers: [Super, Ctrl], key: "XF86TouchpadToggle"): System(TouchpadToggle),
-    (modifiers: [], key: "XF86LaunchA"): System(WorkspaceOverview),
 }
