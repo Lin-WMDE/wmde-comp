@@ -707,6 +707,19 @@ impl Device {
                     )
                 })?,
         ));
+        // DrmDevice::new probes the UniversalPlanes client capability exactly once and keeps
+        // the answer forever; a failure there costs the cursor and overlay plane lists for the
+        // lifetime of the device, which shows up much later as a cursor composited into every
+        // frame. The descriptor comes from the session and may still be paused at this point,
+        // so probe it here too and say what the answer was - the same probe run after the
+        // outputs exist succeeds.
+        {
+            use smithay::reexports::drm::{ClientCapability, Device as _};
+            tracing::info!(
+                "UniversalPlanes at device open: {:?}",
+                fd.set_client_capability(ClientCapability::UniversalPlanes, true)
+            );
+        }
         let (drm, notifier) = DrmDevice::new(fd.clone(), false)
             .with_context(|| format!("Failed to initialize drm device for: {}", path.display()))?;
         let dev_node = DrmNode::from_dev_id(dev)?;
