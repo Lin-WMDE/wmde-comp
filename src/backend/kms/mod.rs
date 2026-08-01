@@ -962,6 +962,22 @@ impl KmsGuard<'_> {
                             planes.cursor = vec![];
                         }
 
+                        // Which planes a machine actually offers decides whether the cursor
+                        // gets a plane of its own or is composited into every frame, and the
+                        // difference is felt as pointer latency. smithay reports both an empty
+                        // cursor list and a failed claim as the same trace line, so state the
+                        // counts here, once, where they are still unambiguous.
+                        info!(
+                            "planes for {:?}: primary {}, cursor {}, overlay {} (driver {:?})",
+                            crtc,
+                            planes.primary.len(),
+                            planes.cursor.len(),
+                            planes.overlay.len(),
+                            driver
+                                .as_ref()
+                                .map(|d| d.name().to_string_lossy().into_owned())
+                        );
+
                         let compositor: GbmDrmOutput = {
                             let mut renderer = self
                                 .api
