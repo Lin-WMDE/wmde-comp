@@ -2249,7 +2249,6 @@ dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
  "cosmic-text",
- "fontconfig-parser",
  "half",
  "iced_core",
  "iced_futures",
@@ -2259,7 +2258,6 @@ dependencies = [
  "lyon_path",
  "raw-window-handle",
  "rustc-hash 2.1.1",
- "sys-locale",
  "thiserror 2.0.18",
  "unicode-segmentation",
 ]
