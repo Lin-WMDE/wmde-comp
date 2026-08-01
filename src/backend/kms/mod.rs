@@ -967,25 +967,15 @@ impl KmsGuard<'_> {
                         // difference is felt as pointer latency. smithay reports both an empty
                         // cursor list and a failed claim as the same trace line, so state the
                         // counts here, once, where they are still unambiguous.
-                        // smithay empties the cursor AND overlay lists together, and only when
-                        // the UniversalPlanes client capability is unavailable. Ask the same
-                        // descriptor - the one logind hands over, not one opened directly -
-                        // so the two cases can be told apart from the log alone. Setting the
-                        // capability again is harmless: it is idempotent.
-                        let universal_planes = drm.device().set_client_capability(
-                            smithay::reexports::drm::ClientCapability::UniversalPlanes,
-                            true,
-                        );
                         info!(
-                            "planes for {:?}: primary {}, cursor {}, overlay {} (driver {:?}, UniversalPlanes {:?})",
+                            "planes for {:?}: primary {}, cursor {}, overlay {} (driver {:?})",
                             crtc,
                             planes.primary.len(),
                             planes.cursor.len(),
                             planes.overlay.len(),
                             driver
                                 .as_ref()
-                                .map(|d| d.name().to_string_lossy().into_owned()),
-                            universal_planes
+                                .map(|d| d.name().to_string_lossy().into_owned())
                         );
 
                         let compositor: GbmDrmOutput = {
