@@ -10,9 +10,13 @@ input = "0.10.0"
 libdisplay-info = { version = "0.3.0", optional = true }
 serde = { version = "1", features = ["derive"] }
 ron = { version = "0.12", optional = true }
+# DIAGNOSTIC BUILD - revert together with the same change in ../Cargo.toml.
+# Cargo unifies features across the graph and tracing picks the MOST restrictive
+# release_max_level_*, so this one line kept debug! and trace! compiled out of the whole
+# compositor even after the parent manifest asked for trace.
 tracing = { version = "0.1.44", features = [
-    "max_level_debug",
-    "release_max_level_info",
+    "max_level_trace",
+    "release_max_level_trace",
 ], optional = true }
 
 [features]
