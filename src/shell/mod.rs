@@ -2226,10 +2226,27 @@ impl Shell {
     }
 
     pub fn next_output(&self, current_output: &Output, direction: Direction) -> Option<&Output> {
+        // WMDE: the candidate filter moved to `neighbor_outputs` so that the pointer edge remap
+        // works off the very same notion of adjacency; picking the nearest one is upstream's.
+        self.neighbor_outputs(current_output, direction)
+            .min_by_key(|(_, res)| *res)
+            .map(|(o, _)| o)
+    }
+
+    /// WMDE: the outputs adjacent to `current_output` in `direction`, each with the distance
+    /// between the two origins along that axis. Upstream had this inline in `next_output` and
+    /// only ever kept the nearest of them; the pointer edge remap needs all of the nearest ones,
+    /// because two outputs stacked along the crossed edge share it.
+    fn neighbor_outputs<'a>(
+        &'a self,
+        current_output: &Output,
+        direction: Direction,
+    ) -> impl Iterator<Item = (&'a Output, i32)> + use<'a> {
         let current_output_geo = current_output.geometry();
+        let current_output = current_output.clone();
         self.outputs()
-            .filter(|o| *o != current_output)
-            .filter(|o| {
+            .filter(move |o| **o != current_output)
+            .filter(move |o| {
                 let geo = o.geometry();
                 match direction {
                     Direction::Left | Direction::Right => {
@@ -2242,7 +2259,7 @@ impl Shell {
                     }
                 }
             })
-            .filter_map(|o| {
+            .filter_map(move |o| {
                 let origin = o.geometry().loc;
                 let res = match direction {
                     Direction::Up => current_output_geo.loc.y - origin.y,
@@ -2252,8 +2269,113 @@ impl Shell {
                 };
                 if res > 0 { Some((o, res)) } else { None }
             })
-            .min_by_key(|(_, res)| *res)
-            .map(|(o, _)| o)
+    }
+
+    /// WMDE: pick the output a relative pointer motion lands on, and where on it.
+    ///
+    /// Upstream chose the output containing the raw position and clamped the position into it.
+    /// Neighbours of different LOGICAL size along a shared edge break that twice over: only the
+    /// part of the taller output that overlaps the shorter one in global coordinates can be
+    /// reached, and coming back out of the rest of it the raw position is inside no output at all,
+    /// so the current output is kept and the clamp pins the pointer to its edge - an invisible
+    /// wall.
+    ///
+    /// Crossing an edge now remaps the coordinate along it: the fraction of the current output's
+    /// edge the pointer left at becomes the same fraction of the neighbouring edge, over the full
+    /// edges, not over the overlapping part (over the overlap the live 1920x1080 next to
+    /// 2560x1600 pair maps onto itself and nothing is fixed). The coordinate perpendicular to the
+    /// edge keeps its raw value, so the overshoot carries into the neighbour. Adjacency is
+    /// `neighbor_outputs`, the same notion the keyboard output shortcuts use through
+    /// `next_output`.
+    ///
+    /// The edge is mapped onto the whole nearest wall - every adjacent output at that distance,
+    /// not just the nearest single one `next_output` answers with. Two outputs stacked along the
+    /// crossed edge cover it together, and mapping onto their combined span keeps an arrangement
+    /// that already lined up mapping onto itself, exactly as upstream had it; taking one of the
+    /// two instead would fold the whole edge onto it and leave the other unreachable, in an order
+    /// that depends on which one was plugged in first.
+    ///
+    /// With no neighbour that way, with the pointer not on `current_output` to begin with, or with
+    /// `confined`, this is upstream's lookup followed by upstream's clamp and nothing else.
+    ///
+    /// The output is still the one the resulting position is inside of, so a delta long enough to
+    /// clear the whole wall in one event lands past it, as upstream had it; the nearest neighbour
+    /// takes the position only when no output holds it - a gap between the outputs of the wall.
+    ///
+    /// `confined` must be the seat's `pointer_confined`: the confine fallback in `input::mod`
+    /// retries `(original.x, position.y)` and `(position.x, original.y)`, a decomposition that
+    /// only means anything while `position` is `original_position` plus the raw delta.
+    pub fn resolve_pointer_motion(
+        &self,
+        current_output: &Output,
+        original_position: Point<f64, Global>,
+        mut position: Point<f64, Global>,
+        confined: bool,
+    ) -> (Output, Point<f64, Global>) {
+        let current_rect = pointer_rect(current_output);
+
+        // `contains` also keeps a stale `seat.active_output()` from reading as an edge crossing;
+        // in the normal flow the previous event's clamp guarantees it
+        let remapped = if confined || !current_rect.contains(original_position) {
+            None
+        } else {
+            edge_crossings(current_rect, original_position, position)
+                .into_iter()
+                .flatten()
+                .find_map(|(direction, t)| {
+                    let nearest = self
+                        .neighbor_outputs(current_output, direction)
+                        .map(|(_, res)| res)
+                        .min()?;
+                    let wall = wall_span(
+                        self.neighbor_outputs(current_output, direction)
+                            .filter(|(_, res)| *res == nearest)
+                            .map(|(o, _)| pointer_rect(o)),
+                        direction,
+                    )?;
+                    let remapped = remap_along_edge(
+                        current_rect,
+                        wall,
+                        direction,
+                        t,
+                        original_position,
+                        position,
+                    )?;
+                    Some((direction, remapped))
+                })
+        };
+
+        let crossed = remapped.map(|(direction, remapped_position)| {
+            position = remapped_position;
+            direction
+        });
+
+        let output = match (
+            self.outputs()
+                .find(|output| output.geometry().to_f64().contains(position)),
+            crossed,
+        ) {
+            (Some(output), _) => output.clone(),
+            // the outputs of a wall need not touch: a remapped position may land in a gap between
+            // two of them, and then the nearest one in the crossed direction takes it
+            (None, Some(direction)) => self
+                .next_output(current_output, direction)
+                .unwrap_or(current_output)
+                .clone(),
+            (None, None) => current_output.clone(),
+        };
+
+        // the clamp is upstream's, see `pointer_rect`; it has to run after the remap, because a
+        // fraction of exactly 1.0 lands one ulp outside the half-open span and the unscaled
+        // residual can push past either end of the neighbour
+        let rect = pointer_rect(&output);
+        position.x = position
+            .x
+            .clamp(rect.loc.x, (rect.loc.x + rect.size.w).next_down());
+        position.y = position
+            .y
+            .clamp(rect.loc.y, (rect.loc.y + rect.size.h).next_down());
+        (output, position)
     }
 
     pub fn builtin_output(&self) -> Option<&Output> {
@@ -5235,4 +5357,332 @@ pub fn check_grab_preconditions(
     }
 
     Some(start_data)
+}
+
+/// WMDE: the span of global coordinates the pointer may occupy on `output`.
+///
+/// output_geometry.size is a rounded value and may undershoot/overshoot the accurate logical size
+/// We constrain the position with:
+/// - output_geometry.size so that we don't send leave events to a fullscreen app
+/// - logical size so that the position doesn't end up outside the actual size of the output
+/// See https://github.com/pop-os/cosmic-comp/pull/2568
+///
+/// Upstream computed this inline in the pointer motion arm and used it only for the clamp. It is
+/// one function here because the edge remap needs the very same span three more times: for the
+/// exit test, for the length it divides by and for the length it multiplies by. Two definitions
+/// half a pixel apart would leave a sliver of the neighbour unreachable, which is the defect the
+/// remap exists to remove.
+fn pointer_rect(output: &Output) -> Rectangle<f64, Global> {
+    let geometry = output.geometry();
+    let scale = output.current_scale().fractional_scale();
+    let physical = output
+        .current_mode()
+        .map(|mode| output.current_transform().transform_size(mode.size))
+        .unwrap_or_default();
+    let logical = physical.to_f64().to_logical(scale);
+    Rectangle::new(
+        geometry.loc.to_f64(),
+        (
+            logical.w.min(geometry.size.w as f64),
+            logical.h.min(geometry.size.h as f64),
+        )
+            .into(),
+    )
+}
+
+/// WMDE: the edges of `rect` that the motion `original -> position` leaves through, each with the
+/// fraction of the motion at which that edge is reached, the edge reached first in front.
+///
+/// The raw end coordinate alone cannot say which edge a diagonal motion crossed; the fraction can.
+fn edge_crossings(
+    rect: Rectangle<f64, Global>,
+    original: Point<f64, Global>,
+    position: Point<f64, Global>,
+) -> [Option<(Direction, f64)>; 2] {
+    let fraction = |bound: f64, from: f64, delta: f64| {
+        if delta == 0.0 {
+            0.0
+        } else {
+            ((bound - from) / delta).clamp(0.0, 1.0)
+        }
+    };
+
+    let horizontal = if position.x < rect.loc.x {
+        Some((Direction::Left, rect.loc.x))
+    } else if position.x >= rect.loc.x + rect.size.w {
+        Some((Direction::Right, rect.loc.x + rect.size.w))
+    } else {
+        None
+    }
+    .map(|(direction, bound)| {
+        (
+            direction,
+            fraction(bound, original.x, position.x - original.x),
+        )
+    });
+
+    let vertical = if position.y < rect.loc.y {
+        Some((Direction::Up, rect.loc.y))
+    } else if position.y >= rect.loc.y + rect.size.h {
+        Some((Direction::Down, rect.loc.y + rect.size.h))
+    } else {
+        None
+    }
+    .map(|(direction, bound)| {
+        (
+            direction,
+            fraction(bound, original.y, position.y - original.y),
+        )
+    });
+
+    match (horizontal, vertical) {
+        (Some(h), Some(v)) if v.1 < h.1 => [Some(v), Some(h)],
+        (horizontal, vertical) => [horizontal, vertical],
+    }
+}
+
+/// WMDE: where `rect` starts and how far it reaches along the edge crossed in `direction`.
+///
+/// The shared edge runs along y for a left/right crossing, along x for an up/down one.
+fn edge_span(rect: Rectangle<f64, Global>, direction: Direction) -> (f64, f64) {
+    match direction {
+        Direction::Left | Direction::Right => (rect.loc.y, rect.size.h),
+        Direction::Up | Direction::Down => (rect.loc.x, rect.size.w),
+    }
+}
+
+/// WMDE: the span the outputs of a wall cover together along the edge crossed in `direction`.
+///
+/// A hole between two of them is spanned over: which one takes the position is decided afterwards,
+/// by the position itself, and a hole in the wall is a hole in the desktop anyway.
+fn wall_span(
+    rects: impl Iterator<Item = Rectangle<f64, Global>>,
+    direction: Direction,
+) -> Option<(f64, f64)> {
+    rects
+        .fold(None, |wall: Option<(f64, f64)>, rect| {
+            let (loc, len) = edge_span(rect, direction);
+            Some(match wall {
+                Some((start, end)) => (start.min(loc), end.max(loc + len)),
+                None => (loc, loc + len),
+            })
+        })
+        .map(|(start, end)| (start, end - start))
+}
+
+/// WMDE: move `position` onto the `(loc, len)` span `to`, keeping the fraction of the crossed edge
+/// it left `from` at.
+///
+/// Perpendicular to the edge the coordinate is left alone, so the overshoot past the edge carries
+/// into the neighbour. Along the edge only the crossing point is proportional; the part of the
+/// motion that happens after the crossing is carried over unscaled, so one motion delivered as
+/// several events lands where the same motion delivered as one event lands.
+///
+/// `None` for a degenerate edge (an output without a current mode): that is the only way a
+/// division by zero, and with it a NaN position handed to clients, could get in.
+fn remap_along_edge(
+    from: Rectangle<f64, Global>,
+    to: (f64, f64),
+    direction: Direction,
+    t: f64,
+    original: Point<f64, Global>,
+    mut position: Point<f64, Global>,
+) -> Option<Point<f64, Global>> {
+    let along_y = matches!(direction, Direction::Left | Direction::Right);
+    let (from_loc, from_len) = edge_span(from, direction);
+    let (to_loc, to_len) = to;
+    if from_len <= 0.0 || to_len <= 0.0 {
+        return None;
+    }
+
+    let (start, delta) = if along_y {
+        (original.y, position.y - original.y)
+    } else {
+        (original.x, position.x - original.x)
+    };
+    // the clamp only bites when the motion left through the other axis first
+    let exit = (start + t * delta).clamp(from_loc, from_loc + from_len);
+    let along = to_loc + (exit - from_loc) / from_len * to_len + (1.0 - t) * delta;
+
+    if along_y {
+        position.y = along;
+    } else {
+        position.x = along;
+    }
+    Some(position)
+}
+
+// WMDE: tests for the pointer edge remap; upstream has no test module in this file.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> Rectangle<f64, Global> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    fn point(x: f64, y: f64) -> Point<f64, Global> {
+        Point::from((x, y))
+    }
+
+    /// The span the outputs behind the crossed edge cover together, as `resolve_pointer_motion`
+    /// hands it to `remap_along_edge`.
+    fn wall<const N: usize>(
+        rects: [Rectangle<f64, Global>; N],
+        direction: Direction,
+    ) -> (f64, f64) {
+        wall_span(rects.into_iter(), direction).expect("wall")
+    }
+
+    /// The one crossing the remap must not disturb: two identical outputs side by side, where
+    /// upstream's raw coordinate was already right.
+    #[test]
+    fn equal_rects_are_the_identity() {
+        let a = rect(0.0, 0.0, 1920.0, 1080.0);
+        let b = rect(1920.0, 0.0, 1920.0, 1080.0);
+        for y in [0.0, 1.0, 540.0, 1079.0, 1079.5] {
+            let original = point(1910.0, y);
+            let position = point(1930.0, y);
+            let (direction, t) = edge_crossings(a, original, position)[0].unwrap();
+            assert_eq!(direction, Direction::Right);
+            let remapped =
+                remap_along_edge(a, wall([b], direction), direction, t, original, position)
+                    .expect("remapped");
+            assert!(
+                (remapped.y - y).abs() <= f64::EPSILON * y.max(1.0),
+                "y {y} came back as {}",
+                remapped.y
+            );
+            assert_eq!(remapped.x, position.x, "perpendicular coordinate kept raw");
+        }
+    }
+
+    /// The live pair. Every point of A's edge has to reach a point of B's, ends included, and
+    /// coming back has to land where it started.
+    #[test]
+    fn full_edge_of_a_reaches_full_edge_of_b() {
+        let a = rect(0.0, 0.0, 1920.0, 1080.0);
+        let b = rect(1920.0, 0.0, 2560.0, 1600.0);
+
+        let cross = |from, to, original: Point<f64, Global>, position| {
+            let (direction, t) = edge_crossings(from, original, position)[0].unwrap();
+            remap_along_edge(from, wall([to], direction), direction, t, original, position)
+                .expect("remapped")
+        };
+
+        let top = cross(a, b, point(1910.0, 0.0), point(1930.0, 0.0));
+        assert_eq!(top.y, 0.0);
+
+        let bottom_y = 1080f64.next_down();
+        let bottom = cross(a, b, point(1910.0, bottom_y), point(1930.0, bottom_y));
+        // two ulps: one from A's own next_down, one from the division
+        assert!(
+            (bottom.y - 1600.0).abs() <= 2.0 * (1600f64.next_up() - 1600.0),
+            "bottom of A reached {} instead of B's 1600",
+            bottom.y
+        );
+
+        for y in [0.0, 17.0, 539.5, 1079.0] {
+            let there = cross(a, b, point(1910.0, y), point(1930.0, y));
+            let back = cross(b, a, point(1930.0, there.y), point(1910.0, there.y));
+            assert!(
+                (back.y - y).abs() < 1e-9,
+                "round trip of {y} came back as {}",
+                back.y
+            );
+        }
+    }
+
+    /// libinput may split one hand movement over several events. The landing point must not
+    /// depend on where it splits it - that is what carrying the post-crossing part of the delta
+    /// over unscaled buys.
+    #[test]
+    fn split_motion_lands_where_one_motion_lands() {
+        let a = rect(0.0, 0.0, 1920.0, 1080.0);
+        let b = rect(1920.0, 0.0, 2560.0, 1600.0);
+
+        let cross = |original: Point<f64, Global>, position| {
+            let (direction, t) = edge_crossings(a, original, position)[0].unwrap();
+            remap_along_edge(a, wall([b], direction), direction, t, original, position)
+                .expect("remapped")
+        };
+
+        let start = point(1900.0, 500.0);
+        let end = point(1960.0, 560.0);
+        let whole = cross(start, end);
+
+        let middle = point(1910.0, 510.0);
+        let halves = cross(middle, end);
+        assert!(
+            (whole.x - halves.x).abs() < 1e-9 && (whole.y - halves.y).abs() < 1e-9,
+            "one event landed at {whole:?}, two events at {halves:?}"
+        );
+    }
+
+    /// Two outputs stacked along the crossed edge are one wall. Their arrangement already covers
+    /// the edge of the current output, so nothing may move - the pointer has to stay on the row
+    /// it was on, and both of them have to stay reachable.
+    #[test]
+    fn stacked_neighbors_are_one_wall() {
+        let a = rect(0.0, 0.0, 3840.0, 2160.0);
+        let upper = rect(3840.0, 0.0, 1920.0, 1080.0);
+        let lower = rect(3840.0, 1080.0, 1920.0, 1080.0);
+
+        for y in [0.0, 540.0, 1079.0, 1080.0, 1600.0, 2159.0] {
+            let original = point(3830.0, y);
+            let position = point(3850.0, y);
+            let (direction, t) = edge_crossings(a, original, position)[0].unwrap();
+            let remapped = remap_along_edge(
+                a,
+                wall([upper, lower], direction),
+                direction,
+                t,
+                original,
+                position,
+            )
+            .expect("remapped");
+            assert!(
+                (remapped.y - y).abs() < 1e-9,
+                "y {y} came back as {}",
+                remapped.y
+            );
+        }
+    }
+
+    /// An output between modeset and hotplug has no mode and a zero-sized span. Dividing by it
+    /// would hand clients a NaN position.
+    #[test]
+    fn degenerate_edge_is_refused() {
+        let a = rect(0.0, 0.0, 1920.0, 1080.0);
+        let degenerate = rect(1920.0, 0.0, 2560.0, 0.0);
+        let original = point(1910.0, 500.0);
+        let position = point(1930.0, 500.0);
+        assert!(
+            remap_along_edge(
+                a,
+                wall([degenerate], Direction::Right),
+                Direction::Right,
+                0.5,
+                original,
+                position
+            )
+            .is_none()
+        );
+        assert!(
+            remap_along_edge(
+                degenerate,
+                wall([a], Direction::Left),
+                Direction::Left,
+                0.5,
+                original,
+                position
+            )
+            .is_none()
+        );
+        assert!(wall_span(std::iter::empty(), Direction::Right).is_none());
+
+        // a motion with no component on the crossed axis must not divide by zero either
+        let crossings = edge_crossings(a, point(1930.0, 500.0), point(1930.0, 500.0));
+        assert_eq!(crossings[0], Some((Direction::Right, 0.0)));
+    }
 }

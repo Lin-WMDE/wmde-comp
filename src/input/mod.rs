@@ -379,35 +379,23 @@ impl State {
 
                     let original_position = position;
                     position += event.delta().as_global();
-                    let shell = self.common.shell.read();
-                    let output = shell
-                        .outputs()
-                        .find(|output| output.geometry().to_f64().contains(position))
-                        .cloned()
-                        .unwrap_or(current_output.clone());
-                    drop(shell);
-                    let output_geometry = output.geometry();
-
-                    let scale = output.current_scale().fractional_scale();
-                    let physical = output
-                        .current_mode()
-                        .map(|mode| output.current_transform().transform_size(mode.size))
-                        .unwrap_or_default();
-                    let logical = physical.to_f64().to_logical(scale);
-                    let output_geometry_loc = output_geometry.loc.to_f64();
-                    // output_geometry.size is a rounded value and may undershoot/overshoot the accurate logical size
-                    // We constrain the position with:
-                    // - output_geometry.size so that we don't send leave events to a fullscreen app
-                    // - logical size so that the position doesn't end up outside the actual size of the output
-                    // See https://github.com/pop-os/cosmic-comp/pull/2568
-                    let max_x = (output_geometry_loc.x
-                        + logical.w.min(output_geometry.size.w as f64))
-                    .next_down();
-                    let max_y = (output_geometry_loc.y
-                        + logical.h.min(output_geometry.size.h as f64))
-                    .next_down();
-                    position.x = position.x.clamp(output_geometry_loc.x, max_x);
-                    position.y = position.y.clamp(output_geometry_loc.y, max_y);
+                    // WMDE: upstream picked the output the raw position landed in right here and
+                    // clamped into it. Both now sit in Shell::resolve_pointer_motion, which also
+                    // remaps the coordinate along a crossed output edge; an upstream change to
+                    // the clamp gets re-applied there, not here. `pointer_confined` switches the
+                    // remap off: the confine fallback below retries (original.x, position.y) and
+                    // (position.x, original.y), which only means anything while position is
+                    // original_position plus the raw delta.
+                    let (output, resolved_position) = {
+                        let shell = self.common.shell.read();
+                        shell.resolve_pointer_motion(
+                            &current_output,
+                            original_position,
+                            position,
+                            pointer_confined,
+                        )
+                    };
+                    position = resolved_position;
 
                     if ptr.is_grabbed() {
                         if seat
