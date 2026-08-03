@@ -752,6 +752,20 @@ fn get_config<T: Default + serde::de::DeserializeOwned>(
     })
 }
 
+// WMDE: get_config falls back to T::default(), which is wrong for a key whose own default is
+// not the type's - a transient read error would switch pointer_edge_remap off instead of
+// leaving it on. This takes the fallback from the caller instead.
+fn get_config_or<T: serde::de::DeserializeOwned>(
+    config: &cosmic_config::Config,
+    key: &str,
+    fallback: T,
+) -> T {
+    config.get(key).unwrap_or_else(|err| {
+        error!(?err, "Failed to read config '{}'", key);
+        fallback
+    })
+}
+
 fn update_input(state: &mut State) {
     if let BackendData::Kms(kms_state) = &mut state.backend {
         for device in kms_state.input_devices.values_mut() {
@@ -922,6 +936,20 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 let new = get_config::<u64>(&config, "focus_follows_cursor_delay");
                 if new != state.common.config.cosmic_conf.focus_follows_cursor_delay {
                     state.common.config.cosmic_conf.focus_follows_cursor_delay = new;
+                }
+            }
+            // WMDE: both default to true, hence get_config_or rather than get_config.
+            "pointer_edge_remap" => {
+                let new = get_config_or(&config, "pointer_edge_remap", true);
+                if new != state.common.config.cosmic_conf.pointer_edge_remap {
+                    state.common.config.cosmic_conf.pointer_edge_remap = new;
+                }
+            }
+            "pointer_edge_remap_while_dragging" => {
+                let new = get_config_or(&config, "pointer_edge_remap_while_dragging", true);
+                let conf = &mut state.common.config.cosmic_conf;
+                if new != conf.pointer_edge_remap_while_dragging {
+                    conf.pointer_edge_remap_while_dragging = new;
                 }
             }
             "edge_snap_threshold" => {

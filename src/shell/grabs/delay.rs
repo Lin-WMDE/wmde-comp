@@ -18,7 +18,7 @@ use smithay::{
 
 use crate::state::State;
 
-use super::GrabStartData;
+use super::{GrabStartData, SeatMovePendingState};
 
 pub struct DelayGrab<G> {
     grab_factory: Option<Box<dyn FnOnce(&mut State) -> Option<(G, Focus)>>>,
@@ -48,6 +48,17 @@ impl<G> DelayGrab<G> {
         match self.start_data {
             GrabStartData::Touch(_) => true,
             GrabStartData::Pointer(_) => false,
+        }
+    }
+}
+
+// WMDE: clears the marker `MoveGrab::delayed` set on the seat, on every way this grab can end -
+// promoted to a real move grab, released without ever moving, or cancelled. `MoveGrab::new`
+// already cleared it by the time a promotion drops this grab, so the store is idempotent.
+impl<G> Drop for DelayGrab<G> {
+    fn drop(&mut self) {
+        if let Some(pending) = self.seat.user_data().get::<SeatMovePendingState>() {
+            pending.set(false);
         }
     }
 }

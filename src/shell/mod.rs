@@ -2295,8 +2295,9 @@ impl Shell {
     /// two instead would fold the whole edge onto it and leave the other unreachable, in an order
     /// that depends on which one was plugged in first.
     ///
-    /// With no neighbour that way, with the pointer not on `current_output` to begin with, or with
-    /// `confined`, this is upstream's lookup followed by upstream's clamp and nothing else.
+    /// With no neighbour that way, with the pointer not on `current_output` to begin with, with
+    /// `confined`, or with `remap` false, this is upstream's lookup followed by upstream's clamp
+    /// and nothing else.
     ///
     /// The output is still the one the resulting position is inside of, so a delta long enough to
     /// clear the whole wall in one event lands past it, as upstream had it; the nearest neighbour
@@ -2305,18 +2306,24 @@ impl Shell {
     /// `confined` must be the seat's `pointer_confined`: the confine fallback in `input::mod`
     /// retries `(original.x, position.y)` and `(position.x, original.y)`, a decomposition that
     /// only means anything while `position` is `original_position` plus the raw delta.
+    ///
+    /// `remap` is the caller's policy switch: the `pointer_edge_remap` setting, and while a
+    /// window move grab is active also `pointer_edge_remap_while_dragging`. It is a separate
+    /// parameter from `confined` because `confined` carries the invariant above, which `remap`
+    /// does not.
     pub fn resolve_pointer_motion(
         &self,
         current_output: &Output,
         original_position: Point<f64, Global>,
         mut position: Point<f64, Global>,
         confined: bool,
+        remap: bool,
     ) -> (Output, Point<f64, Global>) {
         let current_rect = pointer_rect(current_output);
 
         // `contains` also keeps a stale `seat.active_output()` from reading as an edge crossing;
         // in the normal flow the previous event's clamp guarantees it
-        let remapped = if confined || !current_rect.contains(original_position) {
+        let remapped = if confined || !remap || !current_rect.contains(original_position) {
             None
         } else {
             edge_crossings(current_rect, original_position, position)

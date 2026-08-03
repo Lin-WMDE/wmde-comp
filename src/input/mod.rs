@@ -16,7 +16,7 @@ use crate::{
             Stage, render_input_order,
             target::{KeyboardFocusTarget, PointerFocusTarget},
         },
-        grabs::{ReleaseMode, ResizeEdge},
+        grabs::{ReleaseMode, ResizeEdge, SeatMoveGrabState, SeatMovePendingState},
         layout::{
             floating::ResizeGrabMarker,
             tiling::{NodeDesc, SwapWindowGrab, TilingLayout},
@@ -385,7 +385,9 @@ impl State {
                     // the clamp gets re-applied there, not here. `pointer_confined` switches the
                     // remap off: the confine fallback below retries (original.x, position.y) and
                     // (position.x, original.y), which only means anything while position is
-                    // original_position plus the raw delta.
+                    // original_position plus the raw delta. The settings gate is
+                    // pointer_edge_remap_allowed, kept out of this arm for the same reason.
+                    let remap_pointer = self.pointer_edge_remap_allowed(&seat, &ptr);
                     let (output, resolved_position) = {
                         let shell = self.common.shell.read();
                         shell.resolve_pointer_motion(
@@ -393,6 +395,7 @@ impl State {
                             original_position,
                             position,
                             pointer_confined,
+                            remap_pointer,
                         )
                     };
                     position = resolved_position;
@@ -1610,6 +1613,41 @@ impl State {
                 }
             }
         }
+    }
+
+    /// WMDE: whether `Shell::resolve_pointer_motion` may remap the pointer along a crossed
+    /// output edge for this motion event.
+    ///
+    /// `pointer_edge_remap` is the whole-layout switch; off, the resolver falls back to
+    /// upstream's lookup and clamp. `pointer_edge_remap_while_dragging` additionally gates the
+    /// remap while a window move grab is active, where remapping carries the dragged window
+    /// across the edge with the pointer and the window visibly jumps.
+    ///
+    /// Only the pointer move grab counts. `is_grabbed` is also true for menu and popup grabs,
+    /// which is why it is only one half of the test, and it is false during a touch move grab,
+    /// which is why the markers alone are not the test either. Both markers are needed:
+    /// `SeatMoveGrabState` is `None` for the first motion events of a client-initiated drag,
+    /// which starts as a `DelayGrab` and only installs the real grab from an idle callback,
+    /// and it is likewise cleared from an idle, so it outlives the grab by one dispatch;
+    /// `SeatMovePendingState` covers exactly the leading gap.
+    fn pointer_edge_remap_allowed(&self, seat: &Seat<State>, ptr: &PointerHandle<State>) -> bool {
+        let conf = &self.common.config.cosmic_conf;
+        if !conf.pointer_edge_remap {
+            return false;
+        }
+        if conf.pointer_edge_remap_while_dragging {
+            return true;
+        }
+
+        let user_data = seat.user_data();
+        let moving = user_data
+            .get::<SeatMoveGrabState>()
+            .is_some_and(|state| state.lock().unwrap().is_some())
+            || user_data
+                .get::<SeatMovePendingState>()
+                .is_some_and(|pending| pending.get());
+
+        !(ptr.is_grabbed() && moving)
     }
 
     /// Determine is key event should be intercepted as a key binding, or forwarded to surface

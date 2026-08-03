@@ -44,13 +44,41 @@ use smithay::{
 };
 use std::{
     collections::HashSet,
-    sync::{Mutex, atomic::Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
 use super::{GrabStartData, ReleaseMode};
 
 pub type SeatMoveGrabState = Mutex<Option<MoveGrabState>>;
+
+// WMDE: a client-initiated move starts as a `DelayGrab`, which only installs the real move
+// grab from an idle callback, so `SeatMoveGrabState` is still `None` while the first motion
+// events of an ordinary titlebar drag are handled. This marker covers that window, so that
+// `pointer_edge_remap_while_dragging` sees the whole drag; the reader is
+// `State::pointer_edge_remap_allowed`. Set in `grabs::MoveGrab::delayed`, cleared in
+// `MoveGrab::new` and when the `DelayGrab` drops.
+//
+// A named type rather than an alias for `AtomicBool`: seat user data is keyed by type, and
+// `insert_if_missing` keeps whichever value got there first. An alias would share its key with
+// any bare `AtomicBool` anyone else puts on the seat, and the loser of that race would read the
+// other feature's flag with nothing to warn about it. `ResizeGrabMarker` is wrapped for the
+// same reason.
+#[derive(Debug, Default)]
+pub struct SeatMovePendingState(AtomicBool);
+
+impl SeatMovePendingState {
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    pub fn set(&self, pending: bool) {
+        self.0.store(pending, Ordering::SeqCst);
+    }
+}
 
 const RESCALE_ANIMATION_DURATION: f64 = 150.0;
 
@@ -844,6 +872,11 @@ impl MoveGrab {
             .unwrap()
             .lock()
             .unwrap() = Some(grab_state);
+
+        // WMDE: the delayed phase is over, `SeatMoveGrabState` answers for the drag from here on.
+        if let Some(pending) = seat.user_data().get::<SeatMovePendingState>() {
+            pending.set(false);
+        }
 
         {
             let cursor_state = seat.user_data().get::<CursorState>().unwrap();

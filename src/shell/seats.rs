@@ -26,7 +26,7 @@ use smithay::{
 };
 use tracing::warn;
 
-use super::grabs::{SeatMenuGrabState, SeatMoveGrabState};
+use super::grabs::{SeatMenuGrabState, SeatMoveGrabState, SeatMovePendingState};
 
 crate::utils::id_gen!(next_seat_id, SEAT_ID, SEAT_IDS);
 
@@ -203,6 +203,8 @@ pub fn create_seat(
     userdata.insert_if_missing(ModifiersShortcutQueue::default);
     userdata.insert_if_missing(LastModifierChange::default);
     userdata.insert_if_missing_threadsafe(SeatMoveGrabState::default);
+    // WMDE: pending-move marker, see shell::grabs::SeatMovePendingState
+    userdata.insert_if_missing_threadsafe(SeatMovePendingState::default);
     userdata.insert_if_missing_threadsafe(SeatMenuGrabState::default);
     userdata.insert_if_missing_threadsafe(CursorState::default);
     userdata.insert_if_missing_threadsafe(|| ActiveOutput(Mutex::new(output.clone())));

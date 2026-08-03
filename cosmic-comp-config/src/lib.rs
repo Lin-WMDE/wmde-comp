@@ -91,6 +91,14 @@ pub struct CosmicCompConfig {
     pub cursor_follows_focus: bool,
     /// The delay in milliseconds before focus follows mouse (if enabled)
     pub focus_follows_cursor_delay: u64,
+    // WMDE: proportional pointer crossing between outputs whose logical sizes along the
+    // shared edge differ, see Shell::resolve_pointer_motion. Upstream has neither field.
+    /// Enables remapping the pointer along a crossed output edge, so it enters the
+    /// neighbouring output at the same fraction of that edge
+    pub pointer_edge_remap: bool,
+    /// Enables that remap while a window move grab is active, so a dragged window follows
+    /// the pointer across the edge instead of crossing it without a jump
+    pub pointer_edge_remap_while_dragging: bool,
     /// Let X11 applications scale themselves
     pub descale_xwayland: XwaylandDescaling,
     /// Let X11 applications snoop on certain key-presses to allow for global shortcuts
@@ -135,6 +143,9 @@ impl Default for CosmicCompConfig {
             focus_follows_cursor: false,
             cursor_follows_focus: false,
             focus_follows_cursor_delay: 250,
+            // WMDE: both on; off gives back upstream's raw-coordinate crossing exactly.
+            pointer_edge_remap: true,
+            pointer_edge_remap_while_dragging: true,
             descale_xwayland: XwaylandDescaling::Fractional,
             xwayland_eavesdropping: XwaylandEavesdropping::default(),
             edge_snap_threshold: 0,

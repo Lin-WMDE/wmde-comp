@@ -29,7 +29,6 @@ use crate::{
     state::State,
     utils::prelude::Global,
 };
-
 use super::{
     focus::target::PointerFocusTarget,
     layout::{floating::ResizeSurfaceGrab, tiling::ResizeForkGrab},
@@ -87,7 +86,8 @@ pub enum ReleaseMode {
 mod menu;
 pub use self::menu::*;
 mod moving;
-pub use self::moving::SeatMoveGrabState;
+// WMDE: SeatMovePendingState is ours, see moving.rs
+pub use self::moving::{SeatMoveGrabState, SeatMovePendingState};
 mod delay;
 
 bitflags::bitflags! {
@@ -509,6 +509,12 @@ impl MoveGrab {
     ) -> MoveGrab {
         let surface = surface.clone();
         let seat_clone = seat.clone();
+
+        // WMDE: mark the drag as running before the real move grab exists,
+        // see SeatMovePendingState.
+        if let Some(pending) = seat.user_data().get::<SeatMovePendingState>() {
+            pending.set(true);
+        }
 
         MoveGrab::Delayed(delay::DelayGrab::new(
             move |data| {
