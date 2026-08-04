@@ -52,13 +52,14 @@ impl<G> DelayGrab<G> {
     }
 }
 
-// WMDE: clears the marker `MoveGrab::delayed` set on the seat, on every way this grab can end -
-// promoted to a real move grab, released without ever moving, or cancelled. `MoveGrab::new`
-// already cleared it by the time a promotion drops this grab, so the store is idempotent.
+// WMDE: ends the pending drag `MoveGrab::delayed` began, on every way this grab can go away -
+// promoted to a real move grab, released without ever moving, cancelled, or displaced by a
+// newer grab. `MoveGrab::new` already ended it by the time a promotion drops this grab; the
+// counter saturates at zero, so the double end is harmless, see `SeatMovePendingState`.
 impl<G> Drop for DelayGrab<G> {
     fn drop(&mut self) {
         if let Some(pending) = self.seat.user_data().get::<SeatMovePendingState>() {
-            pending.set(false);
+            pending.end();
         }
     }
 }

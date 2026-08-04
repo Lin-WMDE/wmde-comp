@@ -29,6 +29,7 @@ use crate::{
     state::State,
     utils::prelude::Global,
 };
+
 use super::{
     focus::target::PointerFocusTarget,
     layout::{floating::ResizeSurfaceGrab, tiling::ResizeForkGrab},
@@ -513,7 +514,7 @@ impl MoveGrab {
         // WMDE: mark the drag as running before the real move grab exists,
         // see SeatMovePendingState.
         if let Some(pending) = seat.user_data().get::<SeatMovePendingState>() {
-            pending.set(true);
+            pending.begin();
         }
 
         MoveGrab::Delayed(delay::DelayGrab::new(

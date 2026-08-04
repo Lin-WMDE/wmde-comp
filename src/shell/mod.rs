@@ -2235,8 +2235,9 @@ impl Shell {
 
     /// WMDE: the outputs adjacent to `current_output` in `direction`, each with the distance
     /// between the two origins along that axis. Upstream had this inline in `next_output` and
-    /// only ever kept the nearest of them; the pointer edge remap needs all of the nearest ones,
-    /// because two outputs stacked along the crossed edge share it.
+    /// only ever kept the nearest of them; the pointer edge remap consumes the candidates too,
+    /// but ranks them by `edge_gap`, because two outputs stacked along the crossed edge share
+    /// it - the origin distance is only for `next_output`.
     fn neighbor_outputs<'a>(
         &'a self,
         current_output: &Output,
@@ -2288,12 +2289,17 @@ impl Shell {
     /// `neighbor_outputs`, the same notion the keyboard output shortcuts use through
     /// `next_output`.
     ///
-    /// The edge is mapped onto the whole nearest wall - every adjacent output at that distance,
-    /// not just the nearest single one `next_output` answers with. Two outputs stacked along the
-    /// crossed edge cover it together, and mapping onto their combined span keeps an arrangement
-    /// that already lined up mapping onto itself, exactly as upstream had it; taking one of the
-    /// two instead would fold the whole edge onto it and leave the other unreachable, in an order
-    /// that depends on which one was plugged in first.
+    /// The edge is mapped onto the whole nearest wall - every adjacent output whose facing edge
+    /// sits at the smallest `edge_gap`, not just the nearest single one `next_output` answers
+    /// with. Two outputs stacked along the crossed edge cover it together, and mapping onto
+    /// their combined span keeps an arrangement that already lined up mapping onto itself,
+    /// exactly as upstream had it; taking one of the two instead would fold the whole edge onto
+    /// it and leave the other unreachable, in an order that depends on which one was plugged in
+    /// first.
+    ///
+    /// A wall whose gap is not zero is crossable: the remap carries the pointer over the dead
+    /// band that upstream walled off. Deliberate - the keyboard's `next_output` already crosses
+    /// such a gap, and layouts with one only come from a hand-edited or stale display config.
     ///
     /// With no neighbour that way, with the pointer not on `current_output` to begin with, with
     /// `confined`, or with `remap` false, this is upstream's lookup followed by upstream's clamp
@@ -2329,14 +2335,24 @@ impl Shell {
             edge_crossings(current_rect, original_position, position)
                 .into_iter()
                 .flatten()
+                // the crossing test above uses `pointer_rect`, the output lookup below uses
+                // `geometry()`, and `geometry()` may round the logical span up past it; inside
+                // that sub-pixel band the lookup would keep the current output while the
+                // crossing test fires, and the along-edge coordinate would be remapped again
+                // on every event without ever crossing. The lookup's verdict wins. Lazy: the
+                // filter only runs when a crossing was detected.
+                .filter(|_| !current_output.geometry().to_f64().contains(position))
                 .find_map(|(direction, t)| {
+                    let current_geo = current_output.geometry();
                     let nearest = self
                         .neighbor_outputs(current_output, direction)
-                        .map(|(_, res)| res)
+                        .map(|(o, _)| edge_gap(current_geo, o.geometry(), direction))
                         .min()?;
                     let wall = wall_span(
                         self.neighbor_outputs(current_output, direction)
-                            .filter(|(_, res)| *res == nearest)
+                            .filter(|(o, _)| {
+                                edge_gap(current_geo, o.geometry(), direction) == nearest
+                            })
                             .map(|(o, _)| pointer_rect(o)),
                         direction,
                     )?;
@@ -2374,8 +2390,14 @@ impl Shell {
 
         // the clamp is upstream's, see `pointer_rect`; it has to run after the remap, because a
         // fraction of exactly 1.0 lands one ulp outside the half-open span and the unscaled
-        // residual can push past either end of the neighbour
-        let rect = pointer_rect(&output);
+        // residual can push past either end of the neighbour. The span from the top of the
+        // function is reused when the pointer stayed on the same output - the common case -
+        // because `pointer_rect` reads mode, transform and scale on every call.
+        let rect = if output == *current_output {
+            current_rect
+        } else {
+            pointer_rect(&output)
+        };
         position.x = position
             .x
             .clamp(rect.loc.x, (rect.loc.x + rect.size.w).next_down());
@@ -5458,6 +5480,23 @@ fn edge_span(rect: Rectangle<f64, Global>, direction: Direction) -> (f64, f64) {
     }
 }
 
+/// WMDE: the gap between the crossed edge of `from` and the facing edge of `to`, along the
+/// crossing axis. Zero for touching outputs.
+///
+/// The wall is selected by this, not by `neighbor_outputs`' origin distance: for a Left or Up
+/// crossing the origin distance equals the neighbour's own extent, so two stacked neighbours of
+/// different width (height) whose facing edges align would rank differently and one of them
+/// would drop out of the wall. `next_output` keeps the origin distance - that is upstream's
+/// keyboard-focus semantics and stays untouched.
+fn edge_gap(from: Rectangle<i32, Global>, to: Rectangle<i32, Global>, direction: Direction) -> i32 {
+    match direction {
+        Direction::Left => from.loc.x - (to.loc.x + to.size.w),
+        Direction::Right => to.loc.x - (from.loc.x + from.size.w),
+        Direction::Up => from.loc.y - (to.loc.y + to.size.h),
+        Direction::Down => to.loc.y - (from.loc.y + from.size.h),
+    }
+}
+
 /// WMDE: the span the outputs of a wall cover together along the edge crossed in `direction`.
 ///
 /// A hole between two of them is spanned over: which one takes the position is decided afterwards,
@@ -5691,5 +5730,71 @@ mod tests {
         // a motion with no component on the crossed axis must not divide by zero either
         let crossings = edge_crossings(a, point(1930.0, 500.0), point(1930.0, 500.0));
         assert_eq!(crossings[0], Some((Direction::Right, 0.0)));
+    }
+
+    /// A diagonal motion out of a corner crosses two edges; the one reached first decides
+    /// which neighbour is tried first, so the ordering is load-bearing.
+    #[test]
+    fn corner_exit_orders_crossings_by_fraction() {
+        let a = rect(0.0, 0.0, 1920.0, 1080.0);
+        // bottom edge reached at t = (1080-1060)/80 = 0.25, right at t = (1920-1900)/40 = 0.5
+        let crossings = edge_crossings(a, point(1900.0, 1060.0), point(1940.0, 1140.0));
+        assert_eq!(crossings[0], Some((Direction::Down, 0.25)));
+        assert_eq!(crossings[1], Some((Direction::Right, 0.5)));
+    }
+
+    /// An Up/Down crossing remaps along x; every other test crosses Left or Right, so this
+    /// is the only coverage the vertical arms of edge_span and edge_crossings get.
+    #[test]
+    fn vertical_crossing_remaps_along_x() {
+        let a = rect(0.0, 0.0, 1920.0, 1080.0);
+        let b = rect(0.0, 1080.0, 2560.0, 1440.0);
+        let original = point(960.0, 1070.0);
+        let position = point(960.0, 1090.0);
+        // a vertical-only crossing sits in the second slot; the caller reads through flatten
+        let (direction, t) = edge_crossings(a, original, position)
+            .into_iter()
+            .flatten()
+            .next()
+            .unwrap();
+        assert_eq!((direction, t), (Direction::Down, 0.5));
+        let remapped = remap_along_edge(a, wall([b], direction), direction, t, original, position)
+            .expect("remapped");
+        // the middle of A's bottom edge is the middle of B's top edge
+        assert!((remapped.x - 1280.0).abs() < 1e-9, "x = {}", remapped.x);
+        assert_eq!(remapped.y, 1090.0, "perpendicular coordinate kept raw");
+    }
+
+    /// Wall membership is ranked by the gap between facing edges, not by origin distance:
+    /// for a Left crossing the origin distance equals the neighbour's own width, so two
+    /// stacked left neighbours of different width would rank differently despite their
+    /// facing edges lining up.
+    #[test]
+    fn wall_membership_ignores_neighbor_extent() {
+        let irect = |x: i32, y: i32, w: i32, h: i32| {
+            Rectangle::<i32, Global>::new(Point::from((x, y)), Size::from((w, h)))
+        };
+        let current = irect(0, 0, 3840, 2160);
+        let narrow = irect(-1920, 0, 1920, 1080);
+        let wide = irect(-2560, 1080, 2560, 1080);
+        assert_eq!(edge_gap(current, narrow, Direction::Left), 0);
+        assert_eq!(edge_gap(current, wide, Direction::Left), 0);
+        // above, below and to the right the same alignment also ranks as touching
+        assert_eq!(edge_gap(current, irect(500, -600, 800, 600), Direction::Up), 0);
+        assert_eq!(edge_gap(current, irect(500, 2160, 800, 600), Direction::Down), 0);
+        assert_eq!(edge_gap(current, irect(3840, 0, 800, 600), Direction::Right), 0);
+        // a detached neighbour reports its distance to the crossed edge
+        assert_eq!(edge_gap(current, irect(3900, 0, 800, 600), Direction::Right), 60);
+    }
+
+    /// A hole between the outputs of a wall is spanned over, as the doc comment promises.
+    #[test]
+    fn wall_span_bridges_holes() {
+        let upper = rect(3840.0, 0.0, 1920.0, 1080.0);
+        let lower = rect(3840.0, 1200.0, 1920.0, 880.0);
+        assert_eq!(
+            wall_span([upper, lower].into_iter(), Direction::Right),
+            Some((0.0, 2080.0))
+        );
     }
 }

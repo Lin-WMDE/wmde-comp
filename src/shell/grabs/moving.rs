@@ -46,7 +46,7 @@ use std::{
     collections::HashSet,
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -59,7 +59,7 @@ pub type SeatMoveGrabState = Mutex<Option<MoveGrabState>>;
 // grab from an idle callback, so `SeatMoveGrabState` is still `None` while the first motion
 // events of an ordinary titlebar drag are handled. This marker covers that window, so that
 // `pointer_edge_remap_while_dragging` sees the whole drag; the reader is
-// `State::pointer_edge_remap_allowed`. Set in `grabs::MoveGrab::delayed`, cleared in
+// `State::pointer_edge_remap_allowed`. Begun in `grabs::MoveGrab::delayed`, ended in
 // `MoveGrab::new` and when the `DelayGrab` drops.
 //
 // A named type rather than an alias for `AtomicBool`: seat user data is keyed by type, and
@@ -67,16 +67,28 @@ pub type SeatMoveGrabState = Mutex<Option<MoveGrabState>>;
 // any bare `AtomicBool` anyone else puts on the seat, and the loser of that race would read the
 // other feature's flag with nothing to warn about it. `ResizeGrabMarker` is wrapped for the
 // same reason.
+// A counter rather than a flag: a second client move request can arrive while the previous
+// `DelayGrab` is still installed, and smithay's grab overwrite drops the old grab AFTER the
+// new one has already marked itself pending - a flag would be cleared by its predecessor's
+// `Drop`. With a saturating counter the drop order is irrelevant: every `delayed` begins one
+// pending drag, every promotion or teardown ends one, and the floor at zero keeps the
+// promotion-then-drop pair of the same grab from underflowing.
 #[derive(Debug, Default)]
-pub struct SeatMovePendingState(AtomicBool);
+pub struct SeatMovePendingState(AtomicUsize);
 
 impl SeatMovePendingState {
     pub fn get(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.load(Ordering::SeqCst) > 0
     }
 
-    pub fn set(&self, pending: bool) {
-        self.0.store(pending, Ordering::SeqCst);
+    pub fn begin(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn end(&self) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
     }
 }
 
@@ -875,7 +887,7 @@ impl MoveGrab {
 
         // WMDE: the delayed phase is over, `SeatMoveGrabState` answers for the drag from here on.
         if let Some(pending) = seat.user_data().get::<SeatMovePendingState>() {
-            pending.set(false);
+            pending.end();
         }
 
         {

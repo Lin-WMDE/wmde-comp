@@ -1635,7 +1635,23 @@ impl State {
         if !conf.pointer_edge_remap {
             return false;
         }
+        // Resize never remaps, in every configuration: the arm below drops any crossing event
+        // while `ResizeGrabMarker` is up, and remapping would move that boundary - upstream
+        // kept the pointer on the current output inside the sub-pixel edge band, delivering
+        // the event clamped, while a remapped position lands on the neighbour and gets the
+        // event swallowed instead.
+        if seat
+            .user_data()
+            .get::<ResizeGrabMarker>()
+            .is_some_and(|marker| marker.get())
+        {
+            return false;
+        }
         if conf.pointer_edge_remap_while_dragging {
+            return true;
+        }
+        // the cheap flag first: with no grab at all the seat user data is not worth scanning
+        if !ptr.is_grabbed() {
             return true;
         }
 
@@ -1647,7 +1663,7 @@ impl State {
                 .get::<SeatMovePendingState>()
                 .is_some_and(|pending| pending.get());
 
-        !(ptr.is_grabbed() && moving)
+        !moving
     }
 
     /// Determine is key event should be intercepted as a key binding, or forwarded to surface
