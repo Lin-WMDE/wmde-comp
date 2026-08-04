@@ -5797,4 +5797,203 @@ mod tests {
             Some((0.0, 2080.0))
         );
     }
+
+    /// One relative motion `original -> original + delta` on a layout of bare rects, driven
+    /// through the real helpers in the exact order `resolve_pointer_motion` composes them:
+    /// `edge_crossings`, per-crossing neighbour lookup (`neighbor_outputs`' band filter and
+    /// origin-distance test, wall membership ranked by `edge_gap`), `wall_span`,
+    /// `remap_along_edge`, the output lookup, and upstream's clamp with `next_down`. Rect
+    /// coordinates must be integral so that the `geometry()` stand-in is exact, as it is on
+    /// the live layout at scale 100%.
+    fn simulate(
+        layout: &[Rectangle<f64, Global>],
+        current: usize,
+        original: Point<f64, Global>,
+        delta: (f64, f64),
+    ) -> (usize, Point<f64, Global>) {
+        let as_i32 = |r: Rectangle<f64, Global>| {
+            Rectangle::<i32, Global>::new(
+                Point::from((r.loc.x as i32, r.loc.y as i32)),
+                Size::from((r.size.w as i32, r.size.h as i32)),
+            )
+        };
+        let current_rect = layout[current];
+        assert!(
+            current_rect.contains(original),
+            "harness misuse: {original:?} is not on output {current}"
+        );
+        let mut position = original + Point::from(delta);
+
+        // `neighbor_outputs`: not the current output, overlapping the band of the crossed
+        // edge, origin strictly further along the crossing axis; paired with the origin
+        // distance `next_output` ranks by
+        let neighbors = |direction: Direction| {
+            let cur = as_i32(current_rect);
+            layout
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != current)
+                .filter(|(_, r)| {
+                    let geo = as_i32(**r);
+                    match direction {
+                        Direction::Left | Direction::Right => {
+                            geo.loc.y < cur.loc.y + cur.size.h
+                                && geo.loc.y + geo.size.h > cur.loc.y
+                        }
+                        Direction::Up | Direction::Down => {
+                            geo.loc.x < cur.loc.x + cur.size.w
+                                && geo.loc.x + geo.size.w > cur.loc.x
+                        }
+                    }
+                })
+                .filter_map(|(i, r)| {
+                    let origin = as_i32(*r).loc;
+                    let res = match direction {
+                        Direction::Up => cur.loc.y - origin.y,
+                        Direction::Down => origin.y - cur.loc.y,
+                        Direction::Left => cur.loc.x - origin.x,
+                        Direction::Right => origin.x - cur.loc.x,
+                    };
+                    (res > 0).then_some((i, res))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let remapped = edge_crossings(current_rect, original, position)
+            .into_iter()
+            .flatten()
+            .filter(|_| !as_i32(current_rect).to_f64().contains(position))
+            .find_map(|(direction, t)| {
+                let candidates = neighbors(direction);
+                let nearest = candidates
+                    .iter()
+                    .map(|(i, _)| edge_gap(as_i32(current_rect), as_i32(layout[*i]), direction))
+                    .min()?;
+                let wall = wall_span(
+                    candidates
+                        .iter()
+                        .filter(|(i, _)| {
+                            edge_gap(as_i32(current_rect), as_i32(layout[*i]), direction)
+                                == nearest
+                        })
+                        .map(|(i, _)| layout[*i]),
+                    direction,
+                )?;
+                let remapped =
+                    remap_along_edge(current_rect, wall, direction, t, original, position)?;
+                Some((direction, remapped))
+            });
+
+        let crossed = remapped.map(|(direction, remapped_position)| {
+            position = remapped_position;
+            direction
+        });
+
+        let output = match (
+            layout
+                .iter()
+                .position(|r| as_i32(*r).to_f64().contains(position)),
+            crossed,
+        ) {
+            (Some(i), _) => i,
+            (None, Some(direction)) => neighbors(direction)
+                .into_iter()
+                .min_by_key(|(_, res)| *res)
+                .map(|(i, _)| i)
+                .unwrap_or(current),
+            (None, None) => current,
+        };
+
+        let rect = layout[output];
+        position.x = position
+            .x
+            .clamp(rect.loc.x, (rect.loc.x + rect.size.w).next_down());
+        position.y = position
+            .y
+            .clamp(rect.loc.y, (rect.loc.y + rect.size.h).next_down());
+        (output, position)
+    }
+
+    /// Property sweep on the live VM layout (1920x1080 at (0,0) next to 2560x1600 at
+    /// (1920,0), both at scale 100%): the remap keeps the edge fraction on the way out,
+    /// mirrored crossings come back to where they started, and alternating crossings do not
+    /// walk the pointer along the edge. Any failure here is a real jump the design does not
+    /// account for.
+    #[test]
+    fn crossing_never_ratchets() {
+        let a = rect(0.0, 0.0, 1920.0, 1080.0);
+        let b = rect(1920.0, 0.0, 2560.0, 1600.0);
+        let layout = [a, b];
+
+        // (a) crossing right keeps the edge fraction plus the unscaled residual, and stays
+        // inside B's span; (b) the mirrored crossing back returns to the start
+        for y in (0..1080).step_by(7) {
+            let y = y as f64;
+            for (dx, f) in [(1.0, 0.5), (3.0, 0.25), (17.0, 0.75), (120.0, 0.9)] {
+                for dy in [-9.0, 0.0, 9.0] {
+                    let original = point(1920.0 - dx * f, y);
+                    let t = (1920.0 - original.x) / dx;
+                    let (out, land) = simulate(&layout, 0, original, (dx, dy));
+                    assert_eq!(out, 1, "y {y} dx {dx} dy {dy}: did not land on B");
+                    assert!(
+                        (0.0..1600.0).contains(&land.y),
+                        "y {y} dx {dx} dy {dy}: landed outside B's span at {}",
+                        land.y
+                    );
+                    assert_eq!(
+                        land.x,
+                        original.x + dx,
+                        "y {y} dx {dx} dy {dy}: perpendicular overshoot not carried raw"
+                    );
+                    let exit = (y + t * dy).clamp(0.0, 1080.0);
+                    let expected =
+                        (exit / 1080.0 * 1600.0 + (1.0 - t) * dy).clamp(0.0, 1600f64.next_down());
+                    assert!(
+                        (land.y - expected).abs() < 1e-6,
+                        "y {y} dx {dx} dy {dy}: landed at {} instead of {expected} \
+                         (exit fraction {})",
+                        land.y,
+                        exit / 1080.0
+                    );
+
+                    let (back_out, ret) = simulate(&layout, 1, land, (-dx, -dy));
+                    assert_eq!(back_out, 0, "y {y} dx {dx} dy {dy}: did not return to A");
+                    // away from the ends the round trip is exact; where a clamp bit, the
+                    // error is bounded by the two unscaled residuals
+                    let bound = if dy == 0.0 { 1e-9 } else { 2.0 * dy.abs() + 1e-6 };
+                    assert!(
+                        (ret.y - y).abs() <= bound,
+                        "y {y} dx {dx} dy {dy}: returned at {} - drift {:+e}",
+                        ret.y,
+                        ret.y - y
+                    );
+                }
+            }
+        }
+
+        // (c) 200 alternating crossings at fixed physical y with zero dy: the pointer must
+        // come back to the identical y every cycle - a drift here is a ratchet that walks
+        // the cursor up or down the edge event by event
+        for y0 in (0..1080).step_by(7) {
+            let mut y = y0 as f64;
+            let mut first_return = None;
+            for cycle in 0..200 {
+                let (out, land) = simulate(&layout, 0, point(1911.5, y), (17.0, 0.0));
+                assert_eq!(out, 1, "y0 {y0} cycle {cycle}: did not land on B");
+                assert!(
+                    (0.0..1600.0).contains(&land.y),
+                    "y0 {y0} cycle {cycle}: landed outside B's span at {}",
+                    land.y
+                );
+                let (back, ret) = simulate(&layout, 1, land, (-17.0, 0.0));
+                assert_eq!(back, 0, "y0 {y0} cycle {cycle}: did not return to A");
+                y = ret.y;
+                let first = *first_return.get_or_insert(y);
+                assert!(
+                    y == first && (y - y0 as f64).abs() <= 1e-9,
+                    "y0 {y0} cycle {cycle}: came back at {y}, first cycle gave {first} - ratchet"
+                );
+            }
+        }
+    }
 }
