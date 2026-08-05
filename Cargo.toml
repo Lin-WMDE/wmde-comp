@@ -147,10 +147,16 @@ inherits = "release"
 # panic takes the whole desktop down with no chance to unwind.
 [profile.release]
 lto = "fat"
+codegen-units = 1
 
 # Build libcosmic/cosmic-config/cosmic-theme/iced from the local WMDE forks so the
 # renamed config-root and fun.wmde.* ids resolve consistently across the whole stack.
-codegen-units = 1
+#
+# Cargo canonicalises https://host/repo, .../repo/ and .../repo.git to a SINGLE source, and
+# several [patch] tables for one source do not add up: part of the graph silently resolves
+# against upstream instead of the local path, with no unused-patch warning and no error. So
+# exactly ONE table per source, listing every crate any consumer pulls from it - never a
+# second table for another spelling of the same URL.
 [patch."https://github.com/pop-os/libcosmic"]
 libcosmic = { path = "../libcosmic" }
 cosmic-config = { path = "../libcosmic/cosmic-config" }
@@ -168,7 +174,9 @@ iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
 iced_wgpu = { path = "../libcosmic/iced/wgpu" }
 iced_widget = { path = "../libcosmic/iced/widget" }
 
-# cosmic-comp-config pins cosmic-config from the trailing-slash URL variant; patch it too.
+# Shortcuts/WindowRules config crates come from the wmde-settings-daemon fork (original
+# crate names and directories kept). This is how wmde-comp reads the fun.wmde.Settings.*
+# ids in lockstep with the settings daemon.
 [patch."https://github.com/pop-os/cosmic-settings-daemon"]
 cosmic-settings-config = { path = "../wmde-settings-daemon/config" }
 cosmic-settings-daemon-config = { path = "../wmde-settings-daemon/cosmic-settings-daemon-config" }
@@ -180,9 +188,9 @@ cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch
 smithay = { git = "https://github.com/smithay/smithay.git", rev = "1ed69cb" }
 
 # WMDE: redirect the last upstream pop-os/cosmic-randr git dep to the local wmde-randr
-# fork (crate names kept - only the CLI binary is renamed). Both URL forms because the
-# consumers declare the dep with and without a trailing slash; the shell crate pulls the
-# lib crate transitively from the same git source, so both are patched.
+# fork (crate names kept - only the CLI binary is renamed). Consumers declare the dep with
+# and without a trailing slash, which cargo canonicalises to this one source, so this one
+# table covers both spellings - adding a second one for the other spelling would break it.
 [patch."https://github.com/pop-os/cosmic-randr"]
 cosmic-randr-shell = { path = "../wmde-randr/shell" }
 

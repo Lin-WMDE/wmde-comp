@@ -91,6 +91,7 @@ async fn init_session(state: &DBusState) -> zbus::Result<()> {
 async fn init_system(state: &DBusState) -> zbus::Result<()> {
     let conn = state.system_conn().await?.clone();
     let evlh = state.0.evlh.clone();
+    // WMDE: the last-resort screen lock, see `logind::session_lock_task`.
     #[cfg(feature = "logind")]
     {
         let conn = conn.clone();

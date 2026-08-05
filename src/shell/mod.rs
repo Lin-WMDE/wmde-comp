@@ -2828,6 +2828,13 @@ impl Shell {
                 Some(state.geometry.size.as_logical()),
                 Some(set.output.geometry().to_local(&set.output)),
             );
+            // WMDE: `map_internal` places the window as a floating one, so the snap has to be
+            // restated after it. `snap_to_cell` and not `restore_snap`: this is a freshly built
+            // `CosmicMapped` with an empty `last_geometry`, and `state.geometry` - the pre-snap
+            // size `unmap` restored on the way into fullscreen - is what has to go in there.
+            if let Some(corners) = state.was_snapped {
+                set.sticky_layer.snap_to_cell(&window, &corners);
+            }
             return window;
         }
 
@@ -4558,6 +4565,9 @@ impl Shell {
             mapped.map(|m| (set, m))
         }) {
             let to = minimize_rectangle(&set.output, &mapped.active_window());
+            // WMDE: read the snap before `unmap` takes it, the way `Workspace::minimize` does,
+            // so a snapped sticky window comes back into its cell when unminimized.
+            let was_snapped = *mapped.floating_tiled.lock().unwrap();
             let geo = set.sticky_layer.unmap(&mapped, Some(to)).unwrap();
             set.minimized_windows.push(MinimizedWindow::Floating {
                 window: mapped.clone(),
@@ -4565,7 +4575,7 @@ impl Shell {
                     geometry: geo,
                     output_size: set.output.geometry().size.as_logical(),
                     was_maximized: false,
-                    was_snapped: None,
+                    was_snapped,
                 },
             });
         } else if let Some((workspace, window)) =
@@ -4613,7 +4623,12 @@ impl Shell {
                 window.set_active(surface);
             }
             set.sticky_layer
-                .remap_minimized(window, from, previous_position);
+                .remap_minimized(window.clone(), from, previous_position);
+            // WMDE: `remap_minimized` places the window as a floating one, so the snap has to be
+            // restated after it - the way `Workspace::unminimize` does for the non-sticky case.
+            if let Some(corners) = previous.was_snapped {
+                set.sticky_layer.restore_snap(&window, &corners);
+            }
         } else {
             let Some((workspace, window)) = self.workspaces.spaces_mut().find_map(|w| {
                 w.minimized_windows
@@ -4706,7 +4721,9 @@ impl Shell {
                     );
                     // Re-apply the snap if the window was snapped when it was maximized.
                     if let Some(corners) = state.original_snapped {
-                        set.sticky_layer.snap_to_cell(mapped, &corners);
+                        // WMDE: `restore_snap`, not `snap_to_cell`: the pre-snap geometry is
+                        // already recorded and must not be overwritten with the cell.
+                        set.sticky_layer.restore_snap(mapped, &corners);
                     }
                 }
                 Some(state.original_geometry.size.as_logical())
@@ -5088,6 +5105,8 @@ impl Shell {
         {
             let mut from = set.sticky_layer.element_geometry(&mapped).unwrap();
             let mut was_maximized = false;
+            // WMDE: the cell this window is snapped to, so it can be restored to it.
+            let mut was_snapped = None;
             let mut restore_state = None;
             let was_stack = mapped.is_stack();
             window = if let Some(stack) = mapped.stack_ref()
@@ -5116,9 +5135,20 @@ impl Shell {
                         Some(state.original_geometry.size.as_logical()),
                         None,
                     );
+                    // WMDE: `map_maximized` moved the snap marker off the window into
+                    // `original_snapped`, so restate it here - the way `unmaximize_request` does
+                    // for both the sticky and the non-sticky layer. That feeds the read below and
+                    // lets `unmap` hand back the pre-snap size in `from`, which is what the
+                    // restore path in `remap_unfullscreened_window` expects to find there.
+                    if let Some(corners) = state.original_snapped {
+                        set.sticky_layer.restore_snap(&mapped, &corners);
+                    }
                     was_maximized = true;
                 }
 
+                // WMDE: read the snap before `unmap` takes it, so leaving fullscreen puts the
+                // window back into its cell.
+                was_snapped = *mapped.floating_tiled.lock().unwrap();
                 from = set.sticky_layer.unmap(&mapped, None).unwrap();
                 mapped.active_window()
             };
@@ -5139,7 +5169,7 @@ impl Shell {
                         geometry: from,
                         output_size: workspace.output.geometry().size.as_logical(),
                         was_maximized,
-                        was_snapped: None,
+                        was_snapped,
                     },
                     was_stack,
                 })),
@@ -5995,5 +6025,606 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ------------------------------------------------------------------------------------
+    // ARM-LEVEL SIMULATION of the full `resolve_pointer_motion` composition.
+    //
+    // `simulate` above drives the helpers; `resolve_sim` below replicates the production
+    // control flow line by line (each block cites the mirrored lines) and the stream tests
+    // chain events the way the input arm chains them: the next event's `original_position`
+    // is the previous event's delivered position (input/mod.rs:326 reads
+    // `ptr.current_location()`, which smithay's default grab stored from the position
+    // delivered at input/mod.rs:597), and the next event's `current_output` is the previous
+    // event's returned output (input/mod.rs:648 `seat.set_active_output(&output)`).
+    // ------------------------------------------------------------------------------------
+
+    /// `Output::geometry()` stand-in. On the live pair (scale 100%, mode == logical size)
+    /// `pointer_rect` and `geometry()` are the same rectangle; the assert keeps the stand-in
+    /// honest.
+    fn geometry_sim(r: Rectangle<f64, Global>) -> Rectangle<i32, Global> {
+        assert!(
+            r.loc.x.fract() == 0.0
+                && r.loc.y.fract() == 0.0
+                && r.size.w.fract() == 0.0
+                && r.size.h.fract() == 0.0,
+            "harness misuse: layout rects must be integral, got {r:?}"
+        );
+        Rectangle::new(
+            Point::from((r.loc.x as i32, r.loc.y as i32)),
+            Size::from((r.size.w as i32, r.size.h as i32)),
+        )
+    }
+
+    /// Mirrors `Shell::neighbor_outputs`, shell/mod.rs:2241-2273: not the current output
+    /// (2249), overlapping the band of the crossed edge with strict inequalities
+    /// (2250-2262), origin strictly further along the crossing axis, paired with the origin
+    /// distance (2263-2272).
+    fn neighbors_sim(
+        layout: &[Rectangle<f64, Global>],
+        current: usize,
+        direction: Direction,
+    ) -> Vec<(usize, i32)> {
+        let cur = geometry_sim(layout[current]);
+        layout
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != current)
+            .filter(|(_, r)| {
+                let geo = geometry_sim(**r);
+                match direction {
+                    Direction::Left | Direction::Right => {
+                        geo.loc.y < cur.loc.y + cur.size.h && geo.loc.y + geo.size.h > cur.loc.y
+                    }
+                    Direction::Up | Direction::Down => {
+                        geo.loc.x < cur.loc.x + cur.size.w && geo.loc.x + geo.size.w > cur.loc.x
+                    }
+                }
+            })
+            .filter_map(|(i, r)| {
+                let origin = geometry_sim(*r).loc;
+                let res = match direction {
+                    Direction::Up => cur.loc.y - origin.y,
+                    Direction::Down => origin.y - cur.loc.y,
+                    Direction::Left => cur.loc.x - origin.x,
+                    Direction::Right => origin.x - cur.loc.x,
+                };
+                (res > 0).then_some((i, res))
+            })
+            .collect()
+    }
+
+    /// Mirrors `Shell::resolve_pointer_motion`, shell/mod.rs:2320-2408, block by block.
+    fn resolve_sim(
+        layout: &[Rectangle<f64, Global>],
+        current: usize,
+        original: Point<f64, Global>,
+        delta: (f64, f64),
+        confined: bool,
+        remap: bool,
+    ) -> (usize, Point<f64, Global>) {
+        // input/mod.rs:380-381: `original_position = position; position += event.delta()`
+        let mut position = original + Point::from(delta);
+        // shell/mod.rs:2328: `let current_rect = pointer_rect(current_output);`
+        let current_rect = layout[current];
+
+        // shell/mod.rs:2332-2334: the gate - `confined || !remap ||
+        // !current_rect.contains(original_position)`
+        let remapped = if confined || !remap || !current_rect.contains(original) {
+            None
+        } else {
+            // shell/mod.rs:2335-2337: `edge_crossings(..).into_iter().flatten()`
+            edge_crossings(current_rect, original, position)
+                .into_iter()
+                .flatten()
+                // shell/mod.rs:2344: the veto - `geometry()`'s containment verdict wins
+                .filter(|_| !geometry_sim(current_rect).to_f64().contains(position))
+                .find_map(|(direction, t)| {
+                    // shell/mod.rs:2346: `let current_geo = current_output.geometry();`
+                    let current_geo = geometry_sim(current_rect);
+                    // shell/mod.rs:2347-2350: nearest facing-edge gap, `?` bails to the
+                    // next crossing when there is no neighbour that way
+                    let nearest = neighbors_sim(layout, current, direction)
+                        .into_iter()
+                        .map(|(i, _)| edge_gap(current_geo, geometry_sim(layout[i]), direction))
+                        .min()?;
+                    // shell/mod.rs:2351-2358: the wall from the gap-filtered candidates
+                    let wall = wall_span(
+                        neighbors_sim(layout, current, direction)
+                            .into_iter()
+                            .filter(|(i, _)| {
+                                edge_gap(current_geo, geometry_sim(layout[*i]), direction)
+                                    == nearest
+                            })
+                            .map(|(i, _)| layout[i]),
+                        direction,
+                    )?;
+                    // shell/mod.rs:2359-2366
+                    let remapped =
+                        remap_along_edge(current_rect, wall, direction, t, original, position)?;
+                    Some((direction, remapped))
+                })
+        };
+
+        // shell/mod.rs:2371-2374
+        let crossed = remapped.map(|(direction, remapped_position)| {
+            position = remapped_position;
+            direction
+        });
+
+        // shell/mod.rs:2376-2389: lookup by containment, then the two fallbacks
+        let output = match (
+            layout
+                .iter()
+                .position(|r| geometry_sim(*r).to_f64().contains(position)),
+            crossed,
+        ) {
+            (Some(i), _) => i,
+            // shell/mod.rs:2384-2387 via `next_output` (shell/mod.rs:2228-2234): nearest
+            // neighbour by origin distance; `min_by_key` keeps the first of equal ties,
+            // matching `Iterator::min_by_key` over `self.outputs()` order
+            (None, Some(direction)) => neighbors_sim(layout, current, direction)
+                .into_iter()
+                .min_by_key(|(_, res)| *res)
+                .map(|(i, _)| i)
+                .unwrap_or(current),
+            (None, None) => current,
+        };
+
+        // shell/mod.rs:2396-2406: upstream's clamp with the half-open `next_down` bound
+        let rect = layout[output];
+        position.x = position
+            .x
+            .clamp(rect.loc.x, (rect.loc.x + rect.size.w).next_down());
+        position.y = position
+            .y
+            .clamp(rect.loc.y, (rect.loc.y + rect.size.h).next_down());
+        (output, position)
+    }
+
+    /// The live VM pair: A = Virtual-1 1920x1080 at (0,0), B = Virtual-2 2560x1600 at
+    /// (1920,0), both at scale 100%.
+    fn live_layout() -> [Rectangle<f64, Global>; 2] {
+        [
+            rect(0.0, 0.0, 1920.0, 1080.0),
+            rect(1920.0, 0.0, 2560.0, 1600.0),
+        ]
+    }
+
+    /// Whether a delivered position sits on a clamp bound of its output - the only way a
+    /// clamp can have altered it, so split-equivalence checks skip these.
+    fn on_bound(output: usize, p: Point<f64, Global>) -> bool {
+        let r = live_layout()[output];
+        p.x == r.loc.x
+            || p.x == (r.loc.x + r.size.w).next_down()
+            || p.y == r.loc.y
+            || p.y == (r.loc.y + r.size.h).next_down()
+    }
+
+    struct Margins {
+        crossings: usize,
+        min_dev: f64,
+        max_dev: f64,
+    }
+
+    impl Margins {
+        fn new() -> Self {
+            Self {
+                crossings: 0,
+                min_dev: f64::INFINITY,
+                max_dev: f64::NEG_INFINITY,
+            }
+        }
+        fn report(&self, label: &str) {
+            println!(
+                "{label}: {} crossings, dev(landing_y - closed_form) in [{:+e}, {:+e}]",
+                self.crossings, self.min_dev, self.max_dev
+            );
+        }
+    }
+
+    /// The closed-form oracle and the invariant. For an A<->B transition the landing must
+    /// never be ABOVE (smaller y than) `clamp(exit * ratio + (1 - t) * dy, target span)`;
+    /// a same-output event must be exactly upstream's raw clamp - anything else is a
+    /// phantom remap. Effective deltas are `(original + delta) - original`, the exact
+    /// segment the production code sees after input/mod.rs:381.
+    fn check_event(
+        label: &str,
+        current: usize,
+        original: Point<f64, Global>,
+        delta: (f64, f64),
+        out: usize,
+        land: Point<f64, Global>,
+        m: &mut Margins,
+    ) {
+        let layout = live_layout();
+        let (dx, dy) = delta;
+        let px = original.x + dx;
+        let py = original.y + dy;
+        if out == current {
+            let r = layout[current];
+            let ex = px.clamp(r.loc.x, (r.loc.x + r.size.w).next_down());
+            let ey = py.clamp(r.loc.y, (r.loc.y + r.size.h).next_down());
+            assert!(
+                land.x == ex && land.y == ey,
+                "{label}: phantom remap without a transition: original {original:?} delta \
+                 ({dx},{dy}) on output {current} delivered {land:?}, upstream clamp gives \
+                 ({ex},{ey})"
+            );
+            return;
+        }
+        m.crossings += 1;
+        let (from_h, to_h) = if current == 1 {
+            (1600.0, 1080.0)
+        } else {
+            (1080.0, 1600.0)
+        };
+        let edx = px - original.x;
+        let edy = py - original.y;
+        let t = if edx == 0.0 {
+            0.0
+        } else {
+            ((1920.0 - original.x) / edx).clamp(0.0, 1.0)
+        };
+        let exit = (original.y + t * edy).clamp(0.0, from_h);
+        let predicted = (exit / from_h * to_h + (1.0 - t) * edy).clamp(0.0, to_h.next_down());
+        let dev = land.y - predicted;
+        m.min_dev = m.min_dev.min(dev);
+        m.max_dev = m.max_dev.max(dev);
+        assert!(
+            dev >= -1e-9,
+            "CRITICAL {label}: crossing {current}->{out} landed ABOVE the closed form: \
+             original {original:?} delta ({dx},{dy}) t {t} exit {exit} predicted y \
+             {predicted} landed {land:?}, dev {dev:+e}"
+        );
+        assert!(
+            dev <= 1e-6,
+            "{label}: crossing {current}->{out} landed below the closed form: original \
+             {original:?} delta ({dx},{dy}) t {t} exit {exit} predicted y {predicted} \
+             landed {land:?}, dev {dev:+e}"
+        );
+        let tr = layout[out];
+        let ex = px.clamp(tr.loc.x, (tr.loc.x + tr.size.w).next_down());
+        assert!(
+            (land.x - ex).abs() <= 1e-9,
+            "{label}: crossing {current}->{out} x not carried raw: original {original:?} \
+             delta ({dx},{dy}) landed x {} expected {ex}",
+            land.x
+        );
+    }
+
+    /// Deliver `delta` from `original` in `k` equal chained steps - the same straight path
+    /// a slow retrace takes - checking every event's invariant. Reports whether any
+    /// delivered point sat on a clamp bound (then split-equivalence does not apply).
+    fn chain_split(
+        layout: &[Rectangle<f64, Global>; 2],
+        start_out: usize,
+        original: Point<f64, Global>,
+        delta: (f64, f64),
+        k: usize,
+        m: &mut Margins,
+    ) -> (usize, Point<f64, Global>, bool) {
+        let (dx, dy) = delta;
+        let step = (dx / k as f64, dy / k as f64);
+        let mut cur = start_out;
+        let mut pos = original;
+        let mut touched = false;
+        for _ in 0..k {
+            let (out, land) = resolve_sim(layout, cur, pos, step, false, true);
+            check_event("split step", cur, pos, step, out, land, m);
+            touched |= on_bound(out, land);
+            cur = out;
+            pos = land;
+        }
+        (cur, pos, touched)
+    }
+
+    /// Deterministic xorshift64 - the streams must be reproducible in a failure report.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn unit(&mut self) -> f64 {
+            (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn range(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + self.unit() * (hi - lo)
+        }
+    }
+
+    /// The three gate arms of shell/mod.rs:2332: `confined`, `!remap`, and a stale
+    /// `original_position` off the current output all skip the remap and leave upstream's
+    /// lookup and clamp - including the invisible-wall pin the remap exists to remove.
+    #[test]
+    fn arm_sim_gate_paths() {
+        let layout = live_layout();
+        let original = point(1930.0, 1300.0);
+        // confined: raw (1910, 1300) is inside no output, current keeps it, clamp pins it
+        let (out, land) = resolve_sim(&layout, 1, original, (-20.0, 0.0), true, true);
+        assert_eq!((out, land), (1, point(1920.0, 1300.0)));
+        // remap off: same wall
+        let (out, land) = resolve_sim(&layout, 1, original, (-20.0, 0.0), false, false);
+        assert_eq!((out, land), (1, point(1920.0, 1300.0)));
+        // stale original on A while current says B: gate skips, raw lookup takes over
+        let (out, land) = resolve_sim(&layout, 1, point(500.0, 500.0), (-20.0, 0.0), false, true);
+        assert_eq!((out, land), (0, point(480.0, 500.0)));
+    }
+
+    /// Flick arcs: one accelerated libinput event carries the whole crossing with a curved
+    /// tail - dx up to 600 with dy up to 0.3|dx| either way. Every crossing must land on
+    /// the closed form, and the same path retraced in 2, 5 and 17 equal steps must land
+    /// where the one event lands whenever no intermediate clamp bit.
+    #[test]
+    fn arm_sim_flick_arcs() {
+        let layout = live_layout();
+        let mut m = Margins::new();
+        let mut split_checks = 0usize;
+        let cases: [(usize, &[f64], f64); 2] = [
+            (
+                1,
+                &[1920.0, 1921.0, 1925.0, 1950.0, 2050.0, 2200.0, 2519.0],
+                -1.0,
+            ),
+            (
+                0,
+                &[1920f64.next_down(), 1915.0, 1890.0, 1790.0, 1620.0, 1321.0],
+                1.0,
+            ),
+        ];
+        for (cur, xs, sign) in cases {
+            let from_h: f64 = if cur == 1 { 1600.0 } else { 1080.0 };
+            let mut ys: Vec<f64> = (0..from_h as i32).step_by(97).map(|y| y as f64).collect();
+            ys.extend([from_h - 1.0, from_h.next_down()]);
+            for &x in xs {
+                for &y in &ys {
+                    for mag in [40.0, 70.0, 120.0, 200.0, 350.0, 600.0] {
+                        let dx = sign * mag;
+                        for c in [-0.3, -0.15, -0.05, 0.0, 0.05, 0.15, 0.3] {
+                            let dy = c * mag;
+                            let original = point(x, y);
+                            let (out, land) =
+                                resolve_sim(&layout, cur, original, (dx, dy), false, true);
+                            check_event("flick", cur, original, (dx, dy), out, land, &mut m);
+                            let one_touched = on_bound(out, land);
+                            for k in [2usize, 5, 17] {
+                                let (sout, sland, touched) =
+                                    chain_split(&layout, cur, original, (dx, dy), k, &mut m);
+                                if !touched && !one_touched {
+                                    assert!(
+                                        sout == out
+                                            && (sland.y - land.y).abs() <= 1e-6
+                                            && (sland.x - land.x).abs() <= 1e-6,
+                                        "flick split k={k}: one event ({dx},{dy}) from \
+                                         {original:?} on {cur} lands {land:?} on {out}, \
+                                         {k} steps land {sland:?} on {sout}"
+                                    );
+                                    split_checks += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        m.report("flick arcs");
+        println!("flick arcs: {split_checks} clamp-free split equivalences held");
+        assert!(
+            m.crossings > 1000,
+            "stream too weak: {} crossings",
+            m.crossings
+        );
+    }
+
+    /// Micro-jitter: 250k random +-3 px events straddling x=1920 at heights 200..1580,
+    /// chained exactly as the arm chains them (the walk crosses on ~9% of events, so the
+    /// strength floor of 10k+ crossings needs the longer stream). The asymmetric pair
+    /// (x1.481 up against x0.675 down) must not let noise land any single crossing above
+    /// the closed form.
+    #[test]
+    fn arm_sim_micro_jitter() {
+        let layout = live_layout();
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        let mut m = Margins::new();
+        let mut cur = 1usize;
+        let mut pos = point(1921.0, 800.0);
+        for i in 0..250_000 {
+            // keep the walk straddling the seam; a reseed is a fresh delivered state
+            if pos.x < 1905.0 || pos.x > 1935.0 || i % 997 == 0 {
+                if rng.unit() < 0.5 {
+                    cur = 1;
+                    pos = point(1920.0 + rng.range(0.0, 3.0), rng.range(200.0, 1580.0));
+                } else {
+                    cur = 0;
+                    pos = point(1920.0 - rng.range(1e-6, 3.0), rng.range(200.0, 1079.0));
+                }
+            }
+            let delta = (rng.range(-3.0, 3.0), rng.range(-3.0, 3.0));
+            let (out, land) = resolve_sim(&layout, cur, pos, delta, false, true);
+            check_event("jitter", cur, pos, delta, out, land, &mut m);
+            cur = out;
+            pos = land;
+        }
+        m.report("micro jitter");
+        assert!(
+            m.crossings > 10_000,
+            "stream too weak: {} crossings",
+            m.crossings
+        );
+    }
+
+    /// Starts pinned exactly on the boundary (x = 1920.0 is B's own clamp lower bound and
+    /// reachable) and in the corners, with zero-delta pauses before and after each event -
+    /// a pause must be the identity, and the corner fall-through (a vertical crossing first
+    /// by fraction, with no neighbour that way) must still land on the closed form of the
+    /// horizontal crossing.
+    #[test]
+    fn arm_sim_boundary_and_corner_starts() {
+        let layout = live_layout();
+        let mut m = Margins::new();
+        let a_right = 1920f64.next_down();
+        let a_bottom = 1080f64.next_down();
+        let b_bottom = 1600f64.next_down();
+        let starts: &[(usize, Point<f64, Global>)] = &[
+            (1, point(1920.0, 0.0)),
+            (1, point(1920.0, 1e-12)),
+            (1, point(1920.0, 1.0)),
+            (1, point(1920.0, 200.0)),
+            (1, point(1920.0, 800.0)),
+            (1, point(1920.0, 1599.0)),
+            (1, point(1920.0, b_bottom)),
+            (0, point(a_right, 0.0)),
+            (0, point(a_right, 1.0)),
+            (0, point(a_right, 539.5)),
+            (0, point(a_right, 1079.0)),
+            (0, point(a_right, a_bottom)),
+            (0, point(0.0, 0.0)),
+            (0, point(0.0, a_bottom)),
+        ];
+        let dxs = [
+            -600.0, -120.0, -17.0, -3.0, -1.0, -1e-9, -0.0, 0.0, 1e-9, 1.0, 3.0, 17.0, 120.0, 600.0,
+        ];
+        let dys = [
+            -1600.0, -600.0, -120.0, -17.0, -1.0, -1e-9, 0.0, 1e-9, 1.0, 17.0, 120.0, 600.0, 1600.0,
+        ];
+        for &(cur, start) in starts {
+            for dx in dxs {
+                for dy in dys {
+                    let (pout, ppos) = resolve_sim(&layout, cur, start, (0.0, 0.0), false, true);
+                    assert!(
+                        pout == cur && ppos == start,
+                        "pause moved the pointer: {start:?} on {cur} -> {ppos:?} on {pout}"
+                    );
+                    let (out, land) = resolve_sim(&layout, cur, start, (dx, dy), false, true);
+                    check_event("corner", cur, start, (dx, dy), out, land, &mut m);
+                    let (pout, ppos) = resolve_sim(&layout, out, land, (0.0, 0.0), false, true);
+                    assert!(
+                        pout == out && ppos == land,
+                        "trailing pause moved the pointer: {land:?} on {out} -> {ppos:?} on \
+                         {pout}"
+                    );
+                }
+            }
+        }
+        m.report("boundary and corner starts");
+        assert!(
+            m.crossings > 100,
+            "stream too weak: {} crossings",
+            m.crossings
+        );
+    }
+
+    /// Every crossing split into two events at fractions around and exactly at the
+    /// boundary hit, including a first event ending at x = 1920.0 sharp. Clamp-free splits
+    /// must land where the one event lands; every event still holds the invariant.
+    #[test]
+    fn arm_sim_two_event_splits() {
+        let layout = live_layout();
+        let mut m = Margins::new();
+        let mut split_checks = 0usize;
+        let cases: [(usize, f64, f64); 2] = [(1, 1950.0, -1.0), (0, 1890.0, 1.0)];
+        for (cur, x, sign) in cases {
+            let from_h: f64 = if cur == 1 { 1600.0 } else { 1080.0 };
+            for y in [1.0, 200.0, 539.5, 799.0, from_h - 2.0] {
+                if y >= from_h {
+                    continue;
+                }
+                for mag in [40.0, 60.0, 120.0, 350.0] {
+                    let dx = sign * mag;
+                    for dy in [-30.0, -6.0, 0.0, 6.0, 30.0] {
+                        let original = point(x, y);
+                        let (out, land) =
+                            resolve_sim(&layout, cur, original, (dx, dy), false, true);
+                        check_event("2ev whole", cur, original, (dx, dy), out, land, &mut m);
+                        let one_touched = on_bound(out, land);
+                        let t = ((1920.0 - x) / dx).clamp(0.0, 1.0);
+                        let splits = [
+                            0.05,
+                            0.25,
+                            0.5,
+                            0.75,
+                            0.95,
+                            t,
+                            t * 0.999,
+                            t + (1.0 - t) * 0.001,
+                        ];
+                        for s in splits {
+                            if !(s > 0.0 && s < 1.0) {
+                                continue;
+                            }
+                            // the hand's deltas: libinput reports motion, not positions,
+                            // so the second event carries the remaining (1-s) of the throw
+                            // no matter where the first delivery landed
+                            let d1 = (s * dx, s * dy);
+                            let (o1, p1) = resolve_sim(&layout, cur, original, d1, false, true);
+                            check_event("2ev first", cur, original, d1, o1, p1, &mut m);
+                            let d2 = ((1.0 - s) * dx, (1.0 - s) * dy);
+                            let (o2, p2) = resolve_sim(&layout, o1, p1, d2, false, true);
+                            check_event("2ev second", o1, p1, d2, o2, p2, &mut m);
+                            if !one_touched && !on_bound(o1, p1) && !on_bound(o2, p2) {
+                                assert!(
+                                    o2 == out
+                                        && (p2.y - land.y).abs() <= 1e-6
+                                        && (p2.x - land.x).abs() <= 1e-6,
+                                    "two-event split s={s}: ({dx},{dy}) from {original:?} \
+                                     on {cur} lands {land:?} on {out}, split lands {p2:?} \
+                                     on {o2}"
+                                );
+                                split_checks += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        m.report("two-event splits");
+        println!("two-event splits: {split_checks} clamp-free equivalences held");
+        assert!(
+            m.crossings > 500,
+            "stream too weak: {} crossings",
+            m.crossings
+        );
+    }
+
+    /// input/mod.rs:403-413: with a resize grab the arm returns before `ptr.motion()`
+    /// whenever the output changed, so the stored location and the active output both
+    /// stay and the next event re-derives the crossing from the old point. Swallowing
+    /// crossings at random must not open a way above the closed form.
+    #[test]
+    fn arm_sim_swallowed_crossings() {
+        let layout = live_layout();
+        let mut rng = Rng(0xD1B54A32D192ED03);
+        let mut m = Margins::new();
+        let mut cur = 1usize;
+        let mut pos = point(1923.0, 700.0);
+        for i in 0..20_000 {
+            if pos.x < 1900.0 || pos.x > 1940.0 || i % 499 == 0 {
+                if rng.unit() < 0.5 {
+                    cur = 1;
+                    pos = point(1920.0 + rng.range(0.0, 5.0), rng.range(200.0, 1580.0));
+                } else {
+                    cur = 0;
+                    pos = point(1920.0 - rng.range(1e-6, 5.0), rng.range(200.0, 1079.0));
+                }
+            }
+            let delta = (rng.range(-8.0, 8.0), rng.range(-8.0, 8.0));
+            let (out, land) = resolve_sim(&layout, cur, pos, delta, false, true);
+            check_event("swallow", cur, pos, delta, out, land, &mut m);
+            if out != cur && rng.unit() < 0.5 {
+                // swallowed: the arm returned before motion(), state stays
+                continue;
+            }
+            cur = out;
+            pos = land;
+        }
+        m.report("swallowed crossings");
+        assert!(
+            m.crossings > 1000,
+            "stream too weak: {} crossings",
+            m.crossings
+        );
     }
 }

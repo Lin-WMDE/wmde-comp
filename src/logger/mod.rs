@@ -14,7 +14,7 @@ pub fn init_logger() -> Result<()> {
     } else {
         "warn"
     };
-    // The per-crate directives are DEFAULTS, and are only applied when RUST_LOG says
+    // WMDE: the per-crate directives are DEFAULTS, and are only applied when RUST_LOG says
     // nothing. Appending them to a parsed RUST_LOG - which is what happened here - pins
     // smithay, calloop, cosmic_text and wmde_comp at those levels whatever the environment
     // asks for, so `RUST_LOG=smithay::backend::drm::compositor=trace` produced no smithay
