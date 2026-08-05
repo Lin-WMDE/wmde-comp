@@ -13,6 +13,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{HookId, Logical, Point, Rectangle};
 use smithay::wayland::compositor::Cacheable;
 use smithay::wayland::compositor::add_pre_commit_hook;
+use smithay::wayland::compositor::remove_pre_commit_hook;
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellHandler;
 use smithay::wayland::shell::xdg::{SurfaceCachedState, XdgShellSurfaceUserData};
@@ -210,18 +211,20 @@ where
                     let obj = data_init.init(id, data);
                     let obj_downgrade = obj.downgrade();
 
-                    let needs_hook = radius_exists.is_none();
-                    if needs_hook {
-                        let hook_id =
-                            add_pre_commit_hook::<D, _>(surface.wl_surface(), layer_radius_hook);
-                        with_states(surface.wl_surface(), |surface_data| {
-                            let hook_ids = surface_data
-                                .data_map
-                                .get_or_insert_threadsafe(|| LayerHookId::new(None));
-                            let mut guard = hook_ids.lock().unwrap();
-                            *guard = Some((hook_id, obj_downgrade));
-                        });
-                    }
+                    // WMDE: one pre-commit hook per surface, ever. A slot left behind by an
+                    // object that died without reaching `Destroy` keeps its hook and gets the
+                    // new object written into it, instead of a second hook being registered.
+                    let new_hook = radius_exists.is_none().then(|| {
+                        add_pre_commit_hook::<D, _>(surface.wl_surface(), layer_radius_hook)
+                    });
+                    with_states(surface.wl_surface(), |surface_data| {
+                        let hook_ids = surface_data
+                            .data_map
+                            .get_or_insert_threadsafe(|| LayerHookId::new(None));
+                        let mut guard = hook_ids.lock().unwrap();
+                        let hook_id = new_hook.or_else(|| guard.take().map(|(hook_id, _)| hook_id));
+                        *guard = hook_id.map(|hook_id| (hook_id, obj_downgrade));
+                    });
                 } // TODO: can this fail?
             }
             _ => unimplemented!(),
@@ -275,17 +278,20 @@ fn new_xdg<D>(
     let obj = data_init.init(id, data);
     let obj_downgrade = obj.downgrade();
 
-    let needs_hook = radius_exists.is_none();
-    if needs_hook {
-        let hook_id = add_pre_commit_hook::<D, _>(wl_surface, xdg_radius_hook);
-        with_states(wl_surface, |surface_data| {
-            let hook_ids = surface_data
-                .data_map
-                .get_or_insert_threadsafe(|| ToplevelHookId::new(None));
-            let mut guard = hook_ids.lock().unwrap();
-            *guard = Some((hook_id, obj_downgrade));
-        });
-    }
+    // WMDE: one pre-commit hook per surface, ever. A slot left behind by an object that died
+    // without reaching `Destroy` keeps its hook and gets the new object written into it, instead
+    // of a second hook being registered.
+    let new_hook = radius_exists
+        .is_none()
+        .then(|| add_pre_commit_hook::<D, _>(wl_surface, xdg_radius_hook));
+    with_states(wl_surface, |surface_data| {
+        let hook_ids = surface_data
+            .data_map
+            .get_or_insert_threadsafe(|| ToplevelHookId::new(None));
+        let mut guard = hook_ids.lock().unwrap();
+        let hook_id = new_hook.or_else(|| guard.take().map(|(hook_id, _)| hook_id));
+        *guard = hook_id.map(|hook_id| (hook_id, obj_downgrade));
+    });
 }
 
 impl<D>
@@ -328,16 +334,26 @@ where
                     return;
                 };
 
-                with_states(&wl_surface, |surface_data| {
-                    if let Some(hook_ids_mutex) = surface_data.data_map.get::<ToplevelHookId>() {
-                        let mut hook_id = hook_ids_mutex.lock().unwrap();
-                        *hook_id = None;
-                    }
+                // WMDE: the hook goes away with the object it reports errors to. It is taken out
+                // of the slot here and unregistered below - `remove_pre_commit_hook` locks the
+                // very surface mutex `with_states` is holding, so calling it inside would
+                // deadlock the compositor. If the xdg role object is already gone we never get
+                // here, and the stale slot is repaired by the next `new_xdg` on this surface.
+                let hook_id = with_states(&wl_surface, |surface_data| {
+                    let hook_id = surface_data
+                        .data_map
+                        .get::<ToplevelHookId>()
+                        .and_then(|hook_ids_mutex| hook_ids_mutex.lock().unwrap().take());
 
                     let mut cached = surface_data.cached_state.get::<CacheableCorners>();
                     let pending = cached.pending();
                     *pending = CacheableCorners(None);
+
+                    hook_id
                 });
+                if let Some((hook_id, _)) = hook_id {
+                    remove_pre_commit_hook(&wl_surface, &hook_id);
+                }
                 drop(guard);
 
                 state.unset_corner_radius(data);
@@ -444,24 +460,29 @@ where
                 let CornerRadiusSurface::Layer(layer_surface) = &guard.surface else {
                     unreachable!("corner_radius_layer without layer shell?");
                 };
+                // WMDE: the protocol says the object goes inert once its layer surface is gone
+                // and that "any further requests other than destroy" raise `layer_destroyed`.
+                // Destroy is that one exception, so a late destroy is ignored instead of killing
+                // the client - which for a layer surface is a panel, and with it the shell.
                 let Some(layer_surface) = layer_surface.upgrade().ok().and_then(|layer| {
                     state
                         .shell_state()
                         .layer_surfaces()
                         .find(|s| s.shell_surface() == &layer)
                 }) else {
-                    resource.post_error(
-                        cosmic_corner_radius_layer_v1::Error::LayerDestroyed as u32,
-                        format!("{:?} No layer found", resource),
-                    );
                     return;
                 };
 
-                with_states(layer_surface.wl_surface(), |surface_data| {
-                    if let Some(hook_ids_mutex) = surface_data.data_map.get::<LayerHookId>() {
-                        let mut hook_id = hook_ids_mutex.lock().unwrap();
-                        *hook_id = None;
-                    }
+                // WMDE: the hook goes away with the object it reports errors to. It is taken out
+                // of the slot here and unregistered below - `remove_pre_commit_hook` locks the
+                // very surface mutex `with_states` is holding, so calling it inside would
+                // deadlock the compositor. On the early return above the stale slot is repaired
+                // by the next `get_corner_radius_layer` on this surface.
+                let hook_id = with_states(layer_surface.wl_surface(), |surface_data| {
+                    let hook_id = surface_data
+                        .data_map
+                        .get::<LayerHookId>()
+                        .and_then(|hook_ids_mutex| hook_ids_mutex.lock().unwrap().take());
 
                     let mut cached = surface_data.cached_state.get::<CacheableCorners>();
                     let pending = cached.pending();
@@ -470,7 +491,12 @@ where
                     let mut cached = surface_data.cached_state.get::<CacheablePadding>();
                     let pending = cached.pending();
                     *pending = CacheablePadding(None);
+
+                    hook_id
                 });
+                if let Some((hook_id, _)) = hook_id {
+                    remove_pre_commit_hook(layer_surface.wl_surface(), &hook_id);
+                }
                 drop(guard);
 
                 state.unset_corner_radius(data);
@@ -575,7 +601,9 @@ where
             }
             cosmic_corner_radius_layer_v1::Request::UnsetPadding => {
                 let mut guard = data.lock().unwrap();
-                guard.corners = None;
+                // WMDE: was `guard.corners`, copy-pasted from `UnsetRadius` - unsetting the
+                // padding left the padding standing and wiped the corners instead.
+                guard.padding = None;
 
                 let CornerRadiusSurface::Layer(layer_surface) = &guard.surface else {
                     unreachable!("corner_radius_layer without layer shell?");

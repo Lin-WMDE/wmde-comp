@@ -564,10 +564,20 @@ impl PointerGrab<State> for MenuGrab {
                     PointerTarget::motion(&element.iced, &self.seat, state, &new_event);
                 }
             } else {
+                // WMDE: leave *every* entered element, upstream skips the first one. The pointer
+                // is outside all of them here, so anything left entered keeps `button` forwarding
+                // clicks into an iced element whose cursor still sits on the item it last hovered
+                // - a click next to the menu would fire that item instead of dismissing the menu.
+                // An open submenu survives this: the branch above only touches the element under
+                // the pointer, so a parent stays entered while the pointer is over its submenu,
+                // and leaving pops nothing - `PointerTarget::leave` for an `IcedElement` only
+                // queues `CursorLeft` and keeps the cached cursor position, so the parent's
+                // `item::SubmenuItem` still reads as hovered and publishes no `ItemLeft`. What
+                // does pop a submenu is an `ItemLeft` from a later motion onto another row of the
+                // parent, or the whole stack going away when the grab is dropped.
                 elements
                     .iter_mut()
                     .filter(|element| element.pointer_entered)
-                    .skip(1)
                     .for_each(|element| {
                         PointerTarget::leave(
                             &element.iced,

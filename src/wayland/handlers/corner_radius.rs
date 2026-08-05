@@ -29,17 +29,24 @@ pub fn surface_corners(states: &SurfaceData, size: Size<i32, Logical>) -> Option
     let half_min_dim = u8::try_from(size.w.min(size.h) / 2).unwrap_or(u8::MAX);
     let corners = guard.current().0?;
 
+    // WMDE: the `[u8; 4]` corner array is ordered `[bottom_right, top_right, bottom_left,
+    // top_left]` across the whole compositor - that is how the clipping shader uniform is filled
+    // in `render::wayland::clipped_surface`, how `BlurElement` fills its own, and how the
+    // theme-derived radii in `shell::element::window` are indexed ("bottom corners" 0 and 2, "top
+    // corners" 1 and 3). This producer used to emit `[top_left, top_right, bottom_right,
+    // bottom_left]`, which only stayed invisible because every known client sends four equal
+    // radii; asymmetric per-corner radii came out mirrored.
     Some([
-        u8::try_from(corners.top_left)
+        u8::try_from(corners.bottom_right)
             .unwrap_or(u8::MAX)
             .min(half_min_dim),
         u8::try_from(corners.top_right)
             .unwrap_or(u8::MAX)
             .min(half_min_dim),
-        u8::try_from(corners.bottom_right)
+        u8::try_from(corners.bottom_left)
             .unwrap_or(u8::MAX)
             .min(half_min_dim),
-        u8::try_from(corners.bottom_left)
+        u8::try_from(corners.top_left)
             .unwrap_or(u8::MAX)
             .min(half_min_dim),
     ])

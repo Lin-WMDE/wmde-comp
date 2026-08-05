@@ -98,8 +98,17 @@ pub fn push_render_elements_from_surface_tree<R>(
                                 radii,
                                 blur_strength,
                             );
-                            let elem: SurfaceRenderElement<R> = if radii.iter().any(|r| *r != 0)
-                                && should_clip
+                            // WMDE: the decision no longer short-circuits on all-zero radii, only
+                            // on `should_clip`. The shader in `../shaders/clipped_surface.frag`
+                            // does two independent things: it discards everything outside
+                            // `geometry`, and inside it applies `rounding_alpha`, which returns
+                            // 1.0 for a zero radius. All-zero radii therefore mean square
+                            // corners, not an unclipped surface - which is exactly what a snapped
+                            // window or stack asks for. The radii still go into `will_clip`,
+                            // which subtracts the corner squares from `geometry` and asks whether
+                            // the surface reaches past what is left; a surface that stays inside
+                            // stays on the plain, cheaper element.
+                            let elem: SurfaceRenderElement<R> = if should_clip
                                 && ClippedSurfaceRenderElement::will_clip(
                                     &surface, scale, geometry, radii,
                                 ) {
