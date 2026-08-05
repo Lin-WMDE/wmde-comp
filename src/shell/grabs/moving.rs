@@ -50,6 +50,7 @@ use std::{
     },
     time::Instant,
 };
+use tracing::warn;
 
 use super::{GrabStartData, ReleaseMode};
 
@@ -452,13 +453,28 @@ impl MoveGrab {
         else {
             return;
         };
-        if self.cursor_output != current_output {
-            shell
-                .workspaces
-                .active_mut(&self.cursor_output)
-                .unwrap()
-                .tiling_layer
-                .cleanup_drag();
+        // WMDE: the crossing is remembered, because the layout strip is built for one output and
+        // has to be dropped further down, where the grab state is borrowed.
+        let output_changed = self.cursor_output != current_output;
+        if output_changed {
+            // WMDE: the output the drag came from can have been unplugged, the pointer landing
+            // on a surviving one - `cleanup_tiling_drag` looks for the placeholder wherever
+            // `remove_output` left it, and leaves the workspace the pointer is over now out of
+            // its sweep. That one has to keep whatever it holds, because nothing here can put a
+            // placeholder back: the drag's own one is made once by
+            // `TilingLayout::unmap_as_placeholder` at grab start, and only
+            // `Shell::update_pointer_position` ever moves or re-creates it. Of the input paths
+            // that drive this grab only `InputEvent::PointerMotion` calls that - right after
+            // this handler, in the same event - while `PointerMotionAbsolute` and `TouchMotion`
+            // never do, so on a tablet or on an absolute VM pointer a swept workspace would stay
+            // swept for the rest of the drag. Logged once per crossing, not per motion event:
+            // `cursor_output` is updated right below, so the next crossing finds a live output.
+            if cleanup_tiling_drag(&mut shell, &self.cursor_output, Some(&current_output)) {
+                warn!(
+                    "move grab: output {} is gone, swept the tiling drag it left behind",
+                    self.cursor_output.name()
+                );
+            }
             self.cursor_output = current_output.clone();
         }
 
@@ -470,6 +486,18 @@ impl MoveGrab {
         if let Some(grab_state) = borrow.as_mut().and_then(|s| s.as_mut()) {
             grab_state.location = location;
             grab_state.cursor_output = self.cursor_output.clone();
+
+            // WMDE: a `SnapStrip` freezes both its geometry and its cell hit table from the work
+            // area of the output it was built for, so one carried across a crossing would be
+            // drawn - and aimed at - in the coordinates of the output the drag came from.
+            // Dropping it is enough, exactly as when the pointer leaves the strip below: the
+            // element owns its per-output buffers and nothing outside it refers to it. The
+            // reveal branch below rebuilds it from the new work area on this very motion, and
+            // `snap_pick` indexes into the strip that just went away.
+            if output_changed {
+                grab_state.snap_strip = None;
+                grab_state.snap_pick = None;
+            }
 
             let mut window_geo = self.window.geometry();
             window_geo.loc += location.to_i32_round() + grab_state.window_offset;
@@ -525,7 +553,25 @@ impl MoveGrab {
                 }
             }
 
-            let indicator_location = shell.stacking_indicator(&current_output, self.previous);
+            // WMDE: while a strip cell is aimed at, that cell owns the drop (see `MoveGrab::drop`),
+            // so the stack hover must not promise a merge as well - the strip hangs over the top
+            // edge, which is exactly where a window snapped to the top keeps its tab row.
+            // Suppressed here rather than by clearing `grab_state.stacking_indicator` afterwards,
+            // because the hover it mirrors is not the grab's: `hovered_stack` is set only by
+            // `FloatingLayout::update_pointer_position`, which of the input paths that drive this
+            // grab only `InputEvent::PointerMotion` reaches, through
+            // `Shell::update_pointer_position` right after this handler in the same event. So a
+            // cleared indicator would meet an unchanged hover on the next relative motion and be
+            // rebuilt - element, buffers and all - on every one of them, while on
+            // `PointerMotionAbsolute` and `TouchMotion` nothing recomputes the hover at all and
+            // whatever it holds would be left standing. Suppressing the source is right on both.
+            // This reads the pick of the previous motion, one event of lag that no one can see,
+            // and the drop itself never depends on it.
+            let indicator_location = if grab_state.snap_pick.is_some() {
+                None
+            } else {
+                shell.stacking_indicator(&current_output, self.previous)
+            };
             if indicator_location.is_some() != grab_state.stacking_indicator.is_some() {
                 grab_state.stacking_indicator = indicator_location.map(|geo| {
                     let size = geo.size.as_logical();
@@ -621,6 +667,41 @@ impl MoveGrab {
             }
         }
         drop(borrow);
+    }
+}
+
+// WMDE: drop what a tiling drag left in the tree - the placeholder gap and the pill indicator -
+// for the drag that was running on `output`. `dragging_on` is the output the drag goes on with,
+// whose active workspace is kept out of the sweep below; `None` when the drag is over and there
+// is nothing left to keep.
+//
+// The placeholder only ever sits in the active workspace of the output the pointer is on:
+// `TilingLayout::unmap_as_placeholder` puts it where the drag started and
+// `Shell::update_pointer_position` hands the location to that one workspace and `None` to all
+// others. So keying by output is right as long as the output is still there. It can be unplugged
+// mid-drag, and `Workspaces::remove_output` then does one of two things with its set: it parks
+// the whole set in `backup_set` when it was the last output, which `Workspaces::active_mut`
+// still answers from, or it moves the workspaces into the surviving output's set, where they
+// keep the placeholder while no output key reaches them any more. The sweep covers that second
+// case, and only it: in the first one `active_mut` answers from `backup_set` and the branch
+// above cleans the parked set directly - which is just as well, because `Workspaces::spaces_mut`
+// walks `sets` and never `backup_set`. `cleanup_drag` walks the tree and only pushes a new one
+// where it actually removed something. Returns whether it had to sweep, so the caller can report
+// the vanished output once instead of once per motion event.
+fn cleanup_tiling_drag(shell: &mut Shell, output: &Output, dragging_on: Option<&Output>) -> bool {
+    if let Some(workspace) = shell.workspaces.active_mut(output) {
+        workspace.tiling_layer.cleanup_drag();
+        false
+    } else {
+        let keep = dragging_on
+            .and_then(|output| shell.active_space(output))
+            .map(|workspace| workspace.handle);
+        for workspace in shell.workspaces.spaces_mut() {
+            if Some(workspace.handle) != keep {
+                workspace.tiling_layer.cleanup_drag();
+            }
+        }
+        true
     }
 }
 
@@ -939,12 +1020,64 @@ impl Drop for MoveGrab {
                     .get::<SeatMoveGrabState>()
                     .and_then(|s| s.lock().unwrap().take())
             {
-                if grab_state.window.alive() {
-                    let window_location =
-                        (grab_state.location.to_i32_round() + grab_state.window_offset).as_global();
-                    let mut shell = state.common.shell.write();
+                let mut shell = state.common.shell.write();
 
-                    let workspace_handle = shell.active_space(&output).unwrap().handle;
+                // WMDE: this runs from an idle callback, so the output the drag ended on can
+                // already be unplugged: `Workspaces::remove_output` took its workspace set with
+                // it and every `active_space` below would have `None` to unwrap. Fall back to
+                // the output the seat was moved to, and if there is no workspace to be had there
+                // either, leave the window unplaced - losing where it landed beats taking the
+                // session down. Every `active_space` keyed by `output` below rests on this check.
+                let (output, relocated) = if shell.active_space(&output).is_some() {
+                    (Some(output), false)
+                } else {
+                    let fallback = seat.active_output();
+                    warn!(
+                        "move grab ended on output {}, which is gone; falling back to {}",
+                        output.name(),
+                        fallback.name()
+                    );
+                    (
+                        shell.active_space(&fallback).is_some().then_some(fallback),
+                        true,
+                    )
+                };
+                let workspace_handle = output
+                    .as_ref()
+                    .and_then(|output| Some(shell.active_space(output)?.handle));
+
+                if let Some(output) = output
+                    && let Some(workspace_handle) = workspace_handle
+                    && grab_state.window.alive()
+                {
+                    let mut window_location =
+                        (grab_state.location.to_i32_round() + grab_state.window_offset).as_global();
+
+                    // WMDE: `location` was tracked in the global coordinates of the output that
+                    // is gone, a region the fallback output does not cover, and an explicit
+                    // position is taken as given - `FloatingLayout::map_internal` only computes
+                    // one when none is passed. Pull the window into the work area of the output
+                    // it is actually landing on, or the drop puts it fully off-screen.
+                    if relocated {
+                        let work_area = {
+                            let layers = layer_map_for_output(&output);
+                            layers.non_exclusive_zone()
+                        }
+                        .as_local()
+                        .to_global(&output);
+                        let size = grab_state.window.geometry().size.as_global();
+                        // The upper bound is floored at the lower one: a window larger than the
+                        // work area pins to its top left corner instead of tripping `clamp`.
+                        window_location.x = window_location.x.clamp(
+                            work_area.loc.x,
+                            (work_area.loc.x + work_area.size.w - size.w).max(work_area.loc.x),
+                        );
+                        window_location.y = window_location.y.clamp(
+                            work_area.loc.y,
+                            (work_area.loc.y + work_area.size.h - size.h).max(work_area.loc.y),
+                        );
+                    }
+
                     for old_output in window_outputs.iter().filter(|o| *o != &output) {
                         grab_state.window.output_leave(old_output);
                     }
@@ -962,12 +1095,32 @@ impl Drop for MoveGrab {
                                 window_location,
                                 grab_state.window.geometry().size.as_global(),
                             ));
-                            let set = shell.workspaces.sets.get_mut(&output).unwrap();
-                            let (window, location) = set
-                                .sticky_layer
-                                .drop_window(grab_state.window, window_location.to_local(&output));
+                            // WMDE: the sticky layer belongs to the output's own set, and the
+                            // check above does not prove that set is still in `sets`: once the
+                            // last output is gone `Workspaces::remove_output` parks the whole
+                            // set - sticky layer, windows and all - in `backup_set`, and that is
+                            // where `active_space` just answered from. So look the set up the
+                            // way `Workspaces::active` does, `sets` first and `backup_set`
+                            // after, and the window is dropped into a real sticky layer either
+                            // way. `Shell::remap_unfullscreened_window` reaches it through the
+                            // same fallback.
+                            let workspaces = &mut shell.workspaces;
+                            if let Some(set) = workspaces
+                                .sets
+                                .get_mut(&output)
+                                .or(workspaces.backup_set.as_mut())
+                            {
+                                let (window, location) = set.sticky_layer.drop_window(
+                                    grab_state.window,
+                                    window_location.to_local(&output),
+                                );
 
-                            Some((window, location.to_global(&output)))
+                                Some((window, location.to_global(&output)))
+                            } else {
+                                // Unreachable: the check above consulted the same two places in
+                                // the same order and one of them answered.
+                                None
+                            }
                         }
                         ManagedLayer::Tiling
                             if shell.active_space(&output).unwrap().tiling_enabled =>
@@ -986,6 +1139,17 @@ impl Drop for MoveGrab {
                             ));
                             let theme = shell.theme.clone();
                             let workspace = shell.active_space_mut(&output).unwrap();
+
+                            // WMDE: a picked cell wins over a hovered stack. The strip hangs over
+                            // the top edge, where a window snapped to the top keeps its tab row,
+                            // so the hover would have `drop_window` merge the window into that
+                            // stack and return the stack - and the snap below would then apply to
+                            // the whole stack instead of the window being dragged. With the hover
+                            // cleared `drop_window` maps and returns the dragged window itself.
+                            if grab_state.snap_pick.is_some() {
+                                workspace.floating_layer.update_pointer_position(None);
+                            }
+
                             let (window, location) = workspace.floating_layer.drop_window(
                                 grab_state.window,
                                 window_location.to_local(&workspace.output),
@@ -1068,13 +1232,17 @@ impl Drop for MoveGrab {
             };
 
             let mut shell = state.common.shell.write();
-            shell
-                .workspaces
-                .active_mut(&cursor_output)
-                .unwrap()
-                .tiling_layer
-                .cleanup_drag();
+            // WMDE: the output can have been unplugged during the drag, in which case the
+            // workspace this cleans up lives somewhere else now - `cleanup_tiling_drag` finds
+            // it. Nothing is kept back this time (`None`): the drag is over, the window has been
+            // placed above, and `TilingLayout::drop_window` already dropped the placeholders of
+            // the workspace it went into. Silent on purpose: whenever there was a window to
+            // place, the fallback above has already reported the vanished output once.
+            cleanup_tiling_drag(&mut shell, &cursor_output, None);
             shell.set_overview_mode(None, state.common.event_loop_handle.clone());
+            // WMDE: read while the guard is here, because the focus calls below take the shell
+            // lock themselves.
+            let locked = shell.session_lock.is_some();
             drop(shell);
 
             {
@@ -1082,7 +1250,16 @@ impl Drop for MoveGrab {
                 cursor_state.lock().unwrap().unset_shape();
             }
 
-            if let Some((mapped, position)) = position {
+            // WMDE: the placement above always runs, the focus below only on an unlocked
+            // session. `cancel_grabs` drops a running move grab as the session locks, and this
+            // idle is what that drop queues - so without the check a drag that was cut short by
+            // the lock would still hand the dragged window pointer focus (the `pointer.motion`
+            // with a client target) and keyboard focus (`Shell::set_focus`, which has no lock
+            // check of its own), behind the lock screen. Skipping it leaves the window mapped
+            // where the drag left it and simply unfocused: focus stays where the lock put it,
+            // and `Common::refresh_focus` keeps it there - `focus_target_is_valid` accepts
+            // nothing but a lock surface while `session_lock` is set.
+            if !locked && let Some((mapped, position)) = position {
                 let serial = SERIAL_COUNTER.next_serial();
                 if !is_touch_grab {
                     let pointer = seat.get_pointer().unwrap();

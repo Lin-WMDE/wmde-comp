@@ -134,9 +134,10 @@ impl TiledCorners {
 /// A layout offered in the strip: the cells a window can be dropped into.
 ///
 /// Cells are listed **column-major** - all the cells of the leftmost column top to bottom,
-/// then the next column. Nothing about the geometry depends on the order, but the strip builds
-/// its thumbnails as a row of columns by grouping consecutive cells that share an `x`, so a
-/// layout listed row-major would draw wrong. [`layouts_are_column_major`] asserts it.
+/// then the next column, columns left to right. Nothing about the geometry depends on the
+/// order, but the strip builds its thumbnails as a row of columns by grouping consecutive
+/// cells that share an `x` and positions them in list order, so a layout listed row-major, or
+/// with its columns out of order, would draw wrong. [`layouts_are_column_major`] asserts it.
 #[derive(Debug, Clone, Copy)]
 pub struct SnapLayout {
     /// Identifier used for the render element key, so each thumbnail gets a stable one.
@@ -341,11 +342,19 @@ mod tests {
     /// The strip draws a thumbnail as a row of columns, grouping consecutive cells that share
     /// an `x`. A layout listed row-major would still snap correctly but would draw wrong, and
     /// that is the sort of thing nobody notices until it is on screen.
+    ///
+    /// The thumbnail also *positions* by list order - columns left to right as they are
+    /// listed, cells top to bottom inside one - while the geometry comes from the fractions.
+    /// A layout whose columns are listed out of order would snap correctly and draw a
+    /// different picture, which is exactly the drift the fractions exist to prevent, so the
+    /// list order has to be the canonical one: `x` strictly increasing from column to column,
+    /// `y` strictly increasing inside a column.
     #[test]
     fn layouts_are_column_major() {
         for layout in SNAP_LAYOUTS {
             let mut seen: Vec<f64> = Vec::new();
             let mut current = f64::NAN;
+            let mut last_y = f64::NAN;
             for cell in layout.cells {
                 if cell.x != current {
                     assert!(
@@ -354,9 +363,28 @@ mod tests {
                         layout.id,
                         cell.x
                     );
+                    if let Some(previous) = seen.last() {
+                        assert!(
+                            cell.x > *previous,
+                            "{} lists column {} after column {previous}, so the strip would \
+                             draw them the other way round",
+                            layout.id,
+                            cell.x
+                        );
+                    }
                     seen.push(cell.x);
                     current = cell.x;
+                } else {
+                    assert!(
+                        cell.y > last_y,
+                        "{} lists cell y={} after y={last_y} in column {}, so the strip would \
+                         stack them the other way round",
+                        layout.id,
+                        cell.y,
+                        cell.x
+                    );
                 }
+                last_y = cell.y;
             }
         }
     }

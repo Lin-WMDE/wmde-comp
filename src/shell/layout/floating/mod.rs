@@ -1598,15 +1598,6 @@ impl FloatingLayout {
         }
     }
 
-    pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
-        *mapped.floating_tiled.lock().unwrap() = Some(corners.as_cell());
-        mapped.set_tiled(true);
-        let snapped_geo = self.snapped_geometry(corners);
-        let output = self.space.outputs().next().unwrap().clone();
-        mapped.set_geometry(snapped_geo.to_global(&output));
-        mapped.configure();
-    }
-
     /// WMDE: mark `mapped` as snapped, or not, for the client and for the compositor's own
     /// corner rounding - a snapped window has square corners, all four of them.
     ///
@@ -1627,17 +1618,67 @@ impl FloatingLayout {
 
     /// WMDE: place `mapped` in `cell`, as picked from the drag-to-top layout strip.
     ///
-    /// This goes through [`Self::map_internal`], the same way [`Self::move_element`] does, and
-    /// NOT through [`Self::snap_to_corner`]. snap_to_corner only assigns the element geometry;
-    /// it is called from paths that are mapping the window anyway. Here the window has just
-    /// been mapped by `drop_window` at the position it was dropped, so assigning a geometry
-    /// leaves it sitting there - which is exactly what "the window moves randomly or not at
-    /// all" looked like.
+    /// This goes through [`Self::map_internal`], the same way [`Self::move_element`] does,
+    /// instead of just assigning the element geometry: here the window has just been mapped by
+    /// `drop_window` at the position it was dropped, so assigning a geometry leaves it sitting
+    /// there - which is exactly what "the window moves randomly or not at all" looked like.
     ///
     /// A cell that is a known snapped state still records itself as one, so a window dropped
     /// on the "left half" of the strip ends up in the same state a drag to the left edge
     /// produces, and restore-to-floating and the keyboard moves keep working on it.
+    ///
+    /// This is the snap that *records* where the window was, so restoring it has somewhere to
+    /// go. It is right for a window that currently measures its pre-snap size: one that was
+    /// never snapped, or one [`Self::unmap`] has already restored to that size on its way out
+    /// of a workspace. Re-applying a snap to a window that is already sized to its cell goes
+    /// through [`Self::restore_snap`] instead.
     pub fn snap_to_cell(&mut self, mapped: &CosmicMapped, cell: &snap::SnapCell) {
+        self.snap_to_cell_inner(mapped, cell, true);
+    }
+
+    /// WMDE: re-apply a snap `mapped` already had, as recorded in `original_snapped` /
+    /// `was_snapped` - unmaximizing a snapped window, unminimizing one, or, in
+    /// [`Shell::fullscreen_request`], unwinding the maximized state of a snapped window on its
+    /// way into fullscreen: the snap has to be back on the window before [`Self::unmap`] reads
+    /// it, or `unmap` hands out the cell-sized geometry instead of the pre-snap one - and
+    /// overwrites `last_geometry` with it.
+    ///
+    /// Identical to [`Self::snap_to_cell`] except for its recording block, which is skipped
+    /// whole: `last_geometry` is left alone, and so is `maximized_state`, which that block
+    /// takes.
+    ///
+    /// Leaving `last_geometry` alone is the point. The pre-snap geometry is already recorded
+    /// there on these paths, while `floating_tiled` is not: [`Self::map_maximized`] takes it
+    /// into `original_snapped`, and [`Self::unmap`] takes it on the way into the minimize list.
+    /// So the recording guard, which only looks at `floating_tiled`, would fire and overwrite
+    /// `last_geometry` with whatever the window measures right now - on unmaximize that is the
+    /// cell-sized rectangle `map_internal` has just placed, and dragging the window back out
+    /// would leave it stuck at cell size instead of its pre-snap size.
+    ///
+    /// Leaving `maximized_state` alone costs nothing, because every caller has already taken it
+    /// by the time it gets here. `Workspace::unmaximize_request`, `Shell::unmaximize_request`
+    /// and [`Shell::fullscreen_request`] take it themselves and pass the `original_snapped` out
+    /// of what they took; `Workspace::unminimize` and `Shell::unminimize_request` take their
+    /// window out of the minimize list, and `Workspace::minimize` took it on the way in. In
+    /// those first three it must not even be attempted: all three still hold the
+    /// `maximized_state` guard across this call, and `std::sync::Mutex` is not reentrant, so a
+    /// second `lock()` would deadlock. The two `unmaximize_request`s hold a named guard that
+    /// `if let Some(state) = state.take()` shadows rather than drops; `fullscreen_request` locks
+    /// inline (`if let Some(state) = mapped.maximized_state.lock().unwrap().take()`), and the
+    /// 2024 `if let` rescoping only drops that temporary before the `else` block, not on the way
+    /// into the taken branch. `&&` short-circuits on the flag before ever reaching it.
+    pub fn restore_snap(&mut self, mapped: &CosmicMapped, cell: &snap::SnapCell) {
+        self.snap_to_cell_inner(mapped, cell, false);
+    }
+
+    /// WMDE: shared body of [`Self::snap_to_cell`] and [`Self::restore_snap`]; the flag says
+    /// whether the pre-snap geometry still has to be recorded.
+    fn snap_to_cell_inner(
+        &mut self,
+        mapped: &CosmicMapped,
+        cell: &snap::SnapCell,
+        remember_pre_snap_geometry: bool,
+    ) {
         let output = self.space.outputs().next().unwrap().clone();
         let output_geometry = {
             let layers = layer_map_for_output(&output);
@@ -1664,7 +1705,7 @@ impl FloatingLayout {
 
         // Remember where the window was before it was tiled, so restoring it has somewhere to
         // go - move_element does the same on the first snap.
-        if mapped.floating_tiled.lock().unwrap().is_none() {
+        if remember_pre_snap_geometry && mapped.floating_tiled.lock().unwrap().is_none() {
             let last_geometry = mapped
                 .maximized_state
                 .lock()
@@ -1686,14 +1727,6 @@ impl FloatingLayout {
             Some(new_geo.size.as_logical()),
             Some(start_rectangle),
         );
-    }
-
-    fn snapped_geometry(&self, corners: &TiledCorners) -> Rectangle<i32, Local> {
-        let output = self.space.outputs().next().unwrap().clone();
-        let layers = layer_map_for_output(&output);
-        let non_exclusive = layers.non_exclusive_zone();
-        std::mem::drop(layers);
-        corners.relative_geometry(non_exclusive, self.gaps())
     }
 
     fn gaps(&self) -> (i32, i32) {

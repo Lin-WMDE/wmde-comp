@@ -711,7 +711,11 @@ impl CosmicStack {
             if tiled && !appearance.shadow_tiled_windows {
                 return None;
             }
-            let radii = if round {
+            // WMDE: `&& !tiled` - square, to match the stack this shadow sits behind, and
+            // without building a theme radius that would only be thrown away. `round` decides
+            // nothing next to it (`(clip_tiled_windows || !tiled) && !tiled` is `!tiled`); it
+            // is left in place so the upstream expression stays untouched.
+            let radii = if round && !tiled {
                 theme
                     .cosmic()
                     .radius_s()
@@ -793,11 +797,20 @@ impl CosmicStack {
             let maximized = windows[active].is_maximized(false);
             let round = (appearance.clip_tiled_windows || !tiled) && !maximized;
             round.then(|| {
-                theme
-                    .cosmic()
-                    .radius_s()
-                    .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                    .map(|x| x.round() as u8)
+                // WMDE: a snapped stack has square corners, all four of them. Only the radii go
+                // to zero: `Some` is what turns the surface clip on below, and
+                // `push_render_elements_from_surface_tree` clips square corners just as it
+                // clips round ones. A snapped window does the same, see
+                // `CosmicWindow::push_render_elements`.
+                if tiled {
+                    [0; 4]
+                } else {
+                    theme
+                        .cosmic()
+                        .radius_s()
+                        .map(|x| if x < 4.0 { x } else { x + 4.0 })
+                        .map(|x| x.round() as u8)
+                }
             })
         });
 
@@ -979,6 +992,19 @@ impl CosmicStack {
         self.0.with_program(|p| {
             let active_window = &p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)];
             let is_tiled = p.tiled.load(Ordering::Acquire);
+
+            // WMDE: a snapped stack has square corners, all four of them. These radii feed the
+            // focus and move-grab indicators, not the surface clip. Neither branch below
+            // squares a snapped stack on its own: the `round` one forces the theme radius onto
+            // one pair of corners and takes the larger of theme and client radius for the
+            // other, and the `!round` one falls back to `default_radius` unless the client
+            // hints a radius of its own. Returning here also spares both of them the work.
+            // `round` below keeps upstream's `!is_tiled` term, which this leaves with nothing
+            // to decide.
+            if is_tiled {
+                return [0; 4];
+            }
+
             let appearance = p.appearance_conf.lock().unwrap();
             let maximized = active_window.is_maximized(false);
 
@@ -1343,10 +1369,11 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
                 .into(),
         ];
 
-        let radius = if windows[active].is_maximized(false)
-            || (stack.tiled.load(Ordering::Acquire)
-                && !stack.appearance_conf.lock().unwrap().clip_tiled_windows)
-        {
+        // WMDE: a snapped stack has square corners, all four of them. The tab strip draws the
+        // top edge of the frame, so it squares off together with the rest of it. This subsumes
+        // the `tiled && !clip_tiled_windows` case the branch used to spell out, and only a
+        // floating stack still needs the theme radius.
+        let radius = if windows[active].is_maximized(false) || stack.tiled.load(Ordering::Acquire) {
             Radius::from(0.0)
         } else {
             let radii = stack
