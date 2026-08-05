@@ -81,10 +81,23 @@ impl<G: PointerGrab<State>> PointerGrab<State> for DelayGrab<G> {
             let serial = self.serial.unwrap_or(event.serial);
             let seat = self.seat.clone();
             data.common.event_loop_handle.insert_idle(move |data| {
+                // WMDE: an event-loop turn passes between the motion that promoted the drag and
+                // this callback, so both of these are checked here. A session locked in
+                // between must not get a move grab installed behind the lock screen -
+                // `cancel_grabs` runs at lock time and cannot reach a grab that does not exist
+                // yet - and the seat can have lost its pointer capability in the meantime, which
+                // used to be an `unwrap` on this path. Both are checked before `factory`, which
+                // is `Shell::move_request`: skipping it leaves the window mapped where it is
+                // instead of unmapping it for a drag that never starts.
+                let locked = data.common.shell.read().session_lock.is_some();
+                if locked {
+                    return;
+                }
+                let Some(pointer) = seat.get_pointer() else {
+                    return;
+                };
                 if let Some((grab, focus)) = factory(data) {
-                    seat.get_pointer()
-                        .unwrap()
-                        .set_grab(data, grab, serial, focus);
+                    pointer.set_grab(data, grab, serial, focus);
                 }
             });
         }
@@ -242,8 +255,16 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
             let seat = self.seat.clone();
             let serial = self.serial.unwrap_or_else(|| SERIAL_COUNTER.next_serial());
             data.common.event_loop_handle.insert_idle(move |data| {
+                // WMDE: same late-callback checks as the pointer promotion above.
+                let locked = data.common.shell.read().session_lock.is_some();
+                if locked {
+                    return;
+                }
+                let Some(touch) = seat.get_touch() else {
+                    return;
+                };
                 if let Some((grab, _)) = factory(data) {
-                    seat.get_touch().unwrap().set_grab(data, grab, serial);
+                    touch.set_grab(data, grab, serial);
                 }
             });
         }

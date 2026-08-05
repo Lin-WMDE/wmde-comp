@@ -77,17 +77,24 @@ fn render_input_order_internal<R: 'static>(
     element_filter: ElementFilter,
     mut callback: impl FnMut(Stage) -> ControlFlow<Result<R, OutputNoMode>, ()>,
 ) -> ControlFlow<Result<R, OutputNoMode>, ()> {
+    // Session Lock
+    // WMDE: the lock returns before any other stage; upstream emits `Stage::ZoomUI` ahead of it.
+    // Returning after a stage does not undo it: `backend::render::workspace_elements` collects
+    // the stages into a top-first element list, so the zoom overlay was drawn over the lock
+    // surface, and `State::surface_under` answers from the first stage that matches, so a click
+    // on that overlay reached it while locked - and its menu spawns `wmde-settings`
+    // (`shell::zoom`, `Item` "a11y-zoom-settings"). Nothing is emitted above this point, so a
+    // locked session yields the lock surface and nothing else, drawing and input alike.
+    if let Some(session_lock) = &shell.session_lock {
+        return callback(Stage::SessionLock(session_lock.surfaces.get(output)));
+    }
+
     if shell
         .zoom_state
         .as_ref()
         .is_some_and(|state| state.show_overlay && state.current_level(output) != 1.0)
     {
         callback(Stage::ZoomUI)?;
-    }
-
-    // Session Lock
-    if let Some(session_lock) = &shell.session_lock {
-        return callback(Stage::SessionLock(session_lock.surfaces.get(output)));
     }
 
     // Overlay-level layer shell

@@ -305,6 +305,32 @@ impl ImageCopyCaptureHandler for State {
                     return;
                 };
 
+                // WMDE: output and workspace captures end up in `render_input_order`, which
+                // checks the lock as its first statement and then yields `Stage::SessionLock`
+                // and nothing else (`shell::focus::order`), so no window ever reaches their
+                // buffers. This path reads the surface tree directly and has to honour the lock
+                // itself - otherwise a capture session keeps handing out live contents of a
+                // window that sits hidden behind the locker.
+                //
+                // Fail secure: report the frame as captured with no damage. Nothing is written
+                // into the client's buffer, so no content from behind the locker reaches it, and
+                // empty damage is the honest description of that - the buffer is unchanged.
+                // `fail` was the other candidate and is worse: `Stopped` is what this handler
+                // answers when the source itself is gone (the `Destroyed` arm below), not for a
+                // session that is merely held back, and `Unknown` has a well-behaved client
+                // discard the frame and immediately ask for another, spinning on failures until
+                // the screen is unlocked.
+                //
+                // The price is that the reconciliation `render_window_to_buffer` does on the way
+                // in (`remove_session` for a dead toplevel, `update_constraints` plus
+                // `fail(BufferConstraints)` for a resized one) is deferred, not skipped: the
+                // first frame after unlock runs both checks and the session catches up. Nothing
+                // stale is handed out meanwhile, because nothing at all is.
+                if self.common.shell.read().session_lock.is_some() {
+                    frame.success(Transform::Normal, Vec::new(), self.common.clock.now());
+                    return;
+                }
+
                 render_window_to_buffer(self, session, frame, &toplevel)
             }
             ImageCaptureSourceKind::Destroyed => {

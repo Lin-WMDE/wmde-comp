@@ -10,6 +10,7 @@ use logind_zbus::{
 use crate::{
     shell::SessionLock,
     state::{Common, State},
+    wayland::handlers::session_lock::cancel_grabs,
 };
 
 pub fn inhibit_lid(common: &Common) -> Result<OwnedFd> {
@@ -40,7 +41,7 @@ pub fn lid_closed(common: &Common) -> Result<bool> {
     })
 }
 
-/// Last-resort screen lock.
+/// WMDE: last-resort screen lock.
 ///
 /// Locking is normally a client's job: `loginctl lock-session` makes logind emit Lock, the
 /// wmde-greeter locker hears it and drives ext-session-lock. If that client is missing or
@@ -48,9 +49,13 @@ pub fn lid_closed(common: &Common) -> Result<bool> {
 /// and their screen stayed open. That silence is the thing this closes.
 ///
 /// So the compositor listens for the same signal and, only when no lock is held, locks the
-/// session itself with no client attached. Everything needed for that already exists: an
-/// output whose lock has no surface renders empty, and focus_target_is_valid() only ever hands
-/// focus to a lock surface, so input stops reaching applications too.
+/// session itself with no client attached. Everything needed for that already exists, and all
+/// of it keys off `shell.session_lock`: `render_input_order` then yields `Stage::SessionLock`
+/// and nothing else, so the output renders empty (`session_lock_elements` has no surface to
+/// draw) and `State::surface_under`, which walks the same order, has nothing to hand pointer
+/// input to; `update_focus_target` gives keyboard focus to a lock surface only, here to nothing
+/// at all, and `focus_target_is_valid` rejects any other target `Common::refresh_focus` finds
+/// still set; and `cancel_grabs` below drops the seat grabs, which sit in front of all of that.
 ///
 /// It is a blank screen and nothing more - there is no client, so there is nothing to type a
 /// password into. Getting back in means `loginctl unlock-session` from a VT. That is a poor
@@ -94,6 +99,10 @@ pub async fn session_lock_task(
         for output in shell.outputs() {
             state.backend.schedule_render(output);
         }
+        // The blank lock hides the windows but not the seats: a grab set before it would keep
+        // acting on input from behind the blank screen. Same treatment as the real lock.
+        std::mem::drop(shell);
+        cancel_grabs(state);
     })
     .map_err(|InsertError { error, .. }| error)
     .context("Failed to add the logind Lock signal to the event loop")?;

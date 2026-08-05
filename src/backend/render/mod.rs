@@ -750,6 +750,27 @@ where
     );
 
     let shell = shell.read();
+    // WMDE: what `render_input_order` yields is already safe under a session lock - it checks
+    // the lock as its first statement and yields `Stage::SessionLock` and nothing else
+    // (`shell::focus::order`). This covers what `cursor_elements` above put in this list without
+    // going through it: the drag-and-drop icon, the dragged window (with the snap layout strip on
+    // top of it) and the window menu, and the list is top-first, so those would draw over the
+    // lock surface. Fail secure: keep the cursor, which the locker needs, and drop every element
+    // that carries window content. The check runs under the same read guard `render_input_order`
+    // uses, so the two cannot disagree about the lock.
+    //
+    // One element stays outside this retain, knowingly: under `feature = "debug"` the fps overlay
+    // is built in `output_elements` and prepended to what this function returns, so the retain
+    // never sees it. It is left alone - it draws frame timings and focus labels, never window
+    // contents, and `debug` is not a default feature, so no shipped binary carries it (the
+    // package builds through plain `make`, i.e. `cargo build --release`).
+    //
+    // This is the second line of defence and not the whole of it. Suppressing the picture of a
+    // grab that is still running would only make it invisible, so the grabs themselves are
+    // cancelled at both lock entry points - see `wayland::handlers::session_lock::cancel_grabs`.
+    if shell.session_lock.is_some() {
+        elements.retain(|elem| matches!(elem, CosmicElement::Cursor(_)));
+    }
     let overview = shell.overview_mode();
     let (resize_mode, resize_indicator) = shell.resize_mode();
     let resize_indicator = resize_indicator.map(|indicator| (resize_mode, indicator));

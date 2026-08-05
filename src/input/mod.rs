@@ -471,6 +471,19 @@ impl State {
                                         //takes this function to run
                                         state.common.pointer_focus_state = None;
 
+                                        // WMDE: same rule as the grab idles below - this fires
+                                        // `focus_follows_cursor_delay` ms (250 by default) after
+                                        // the motion that scheduled it, and a session locked in
+                                        // that window must not have keyboard focus handed to the
+                                        // window the cursor was over. The schedule is cleared
+                                        // just above either way, and `refresh_focus` restores
+                                        // focus from the focus stack after an unlock.
+                                        let locked =
+                                            state.common.shell.read().session_lock.is_some();
+                                        if locked {
+                                            return TimeoutAction::Drop;
+                                        }
+
                                         Shell::set_focus(
                                             state,
                                             target.as_ref(),
@@ -779,9 +792,15 @@ impl State {
                                     if let Some((target, focus)) = grab {
                                         seat.modifiers_shortcut_queue().clear();
 
-                                        seat.get_pointer()
-                                            .unwrap()
-                                            .set_grab(state, target, serial, focus);
+                                        // WMDE: both callers reach this from an idle, so take the
+                                        // pointer as the `Option` it is, the way `grabs::delay`
+                                        // does, instead of unwrapping it. `shell::create_seat` is
+                                        // the only place a seat is built and it always adds a
+                                        // pointer, so this is shape rather than a live crash.
+                                        let Some(pointer) = seat.get_pointer() else {
+                                            return;
+                                        };
+                                        pointer.set_grab(state, target, serial, focus);
                                     }
                                 }
 
@@ -792,6 +811,19 @@ impl State {
                                             self.common.event_loop_handle.insert_idle(
                                                 move |state| {
                                                     let mut shell = state.common.shell.write();
+                                                    // WMDE: an event-loop turn passes between the
+                                                    // press that queued this and the callback. A
+                                                    // session locked in between must not get a
+                                                    // move grab installed behind the lock screen -
+                                                    // `cancel_grabs` runs at lock time and cannot
+                                                    // reach a grab that does not exist yet. The
+                                                    // check comes before `move_request`, which
+                                                    // unmaps the window out of its layer for the
+                                                    // drag: skipping it leaves the window mapped
+                                                    // where it is instead of stranding it.
+                                                    if shell.session_lock.is_some() {
+                                                        return;
+                                                    }
                                                     let res = shell.move_request(
                                                         &surface,
                                                         &seat_clone,
@@ -812,6 +844,14 @@ impl State {
                                             self.common.event_loop_handle.insert_idle(
                                                 move |state| {
                                                     let mut shell = state.common.shell.write();
+                                                    // WMDE: same rule as the move promotion
+                                                    // above - the lock can arrive in the turn
+                                                    // between press and callback, and
+                                                    // `cancel_grabs` cannot reach a resize grab
+                                                    // that does not exist yet.
+                                                    if shell.session_lock.is_some() {
+                                                        return;
+                                                    }
                                                     let Some(target_elem) =
                                                         shell.element_for_surface(&surface)
                                                     else {
@@ -2061,6 +2101,17 @@ impl State {
                         ) {
                             let seat = seat.clone();
                             self.common.event_loop_handle.insert_idle(move |state| {
+                                // WMDE: the swap runs under the caller's shell guard, this
+                                // callback a turn later. A session locked in between must not
+                                // have keyboard focus handed to a window behind the lock screen -
+                                // `focus_target_is_valid` would only take it back on the next
+                                // `Common::refresh_focus`, up to 150 ms away. Skipping the call
+                                // leaves the swapped tree alone; focus is restored from the
+                                // focus stack by `refresh_focus` once the session unlocks.
+                                let locked = state.common.shell.read().session_lock.is_some();
+                                if locked {
+                                    return;
+                                }
                                 Shell::set_focus(state, Some(&focus), &seat, None, true);
                             });
                         }
@@ -2077,6 +2128,11 @@ impl State {
                         std::mem::drop(spaces);
                         let seat = seat.clone();
                         self.common.event_loop_handle.insert_idle(move |state| {
+                            // WMDE: same rule as the cross-workspace swap above.
+                            let locked = state.common.shell.read().session_lock.is_some();
+                            if locked {
+                                return;
+                            }
                             Shell::set_focus(state, Some(&focus), &seat, None, true);
                         });
                     }
@@ -2113,6 +2169,11 @@ impl State {
                     ) {
                         let seat = seat.clone();
                         self.common.event_loop_handle.insert_idle(move |state| {
+                            // WMDE: same rule as the swaps above.
+                            let locked = state.common.shell.read().session_lock.is_some();
+                            if locked {
+                                return;
+                            }
                             Shell::set_focus(state, Some(&focus), &seat, None, true);
                         });
                     }
