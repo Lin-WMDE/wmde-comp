@@ -97,6 +97,7 @@ features = [
     "backend_drm",
     "backend_gbm",
     "backend_egl",
+    "backend_libei",
     "backend_libinput",
     "backend_session_libseat",
     "backend_udev",
@@ -185,7 +186,7 @@ cosmic-settings-daemon-config = { path = "../wmde-settings-daemon/cosmic-setting
 cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
 
 [patch.crates-io]
-smithay = { git = "https://github.com/smithay/smithay.git", rev = "1ed69cb" }
+smithay = { git = "https://github.com/smithay/smithay.git", rev = "5fb12b8" }
 
 # WMDE: redirect the last upstream pop-os/cosmic-randr git dep to the local wmde-randr
 # fork (crate names kept - only the CLI binary is renamed). Consumers declare the dep with
