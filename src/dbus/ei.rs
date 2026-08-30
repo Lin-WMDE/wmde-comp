@@ -9,8 +9,8 @@ use zbus::names::{UniqueName, WellKnownName};
 use super::name_owners::NameOwners;
 
 static ALLOWED_NAMES: &[WellKnownName] = &[
-    WellKnownName::from_static_str_unchecked("org.freedesktop.impl.portal.desktop.cosmic"),
-    WellKnownName::from_static_str_unchecked("com.system76.CosmicOSK"),
+    WellKnownName::from_static_str_unchecked("org.freedesktop.impl.portal.desktop.wmde"),
+    WellKnownName::from_static_str_unchecked("fun.wmde.OSK"),
 ];
 
 /// Channel for handing the EI socketpair (and requested device types)
@@ -32,7 +32,7 @@ impl Ei {
     }
 }
 
-#[zbus::interface(name = "com.system76.CosmicComp.Ei")]
+#[zbus::interface(name = "fun.wmde.Comp.Ei")]
 impl Ei {
     /// Create a new EI sender context
     async fn get_sender_socket(
@@ -62,7 +62,7 @@ impl Ei {
     }
 }
 
-/// Register the `com.system76.CosmicComp.Ei` interface on the shared session connection.
+/// Register the `fun.wmde.Comp.Ei` interface on the shared session connection.
 pub async fn init(
     conn: &zbus::Connection,
     name_owners: &NameOwners,
@@ -73,8 +73,8 @@ pub async fn init(
         name_owners: name_owners.clone(),
     };
     conn.object_server()
-        .at("/com/system76/CosmicComp/Ei", ei)
+        .at("/fun/wmde/Comp/Ei", ei)
         .await?;
-    conn.request_name("com.system76.CosmicComp").await?;
+    conn.request_name("fun.wmde.Comp").await?;
     Ok(())
 }
