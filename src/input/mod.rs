@@ -1894,6 +1894,8 @@ impl State {
                 .is_some_and(|pending| pending.get());
 
         !moving
+    }
+
     /// The modifier state held by the source that produced an event.
     pub(crate) fn source_modifiers(
         &self,
