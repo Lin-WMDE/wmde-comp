@@ -1621,6 +1621,9 @@ impl Common {
         if let Some(mut a11y_keyboard_monitor) = self.dbus_state.a11y_keyboard_monitor() {
             a11y_keyboard_monitor.refresh();
         }
+        if let Some(windows) = self.dbus_state.windows() {
+            windows.refresh(&self.display_handle, &self.toplevel_info_state);
+        }
         self.image_copy_capture_state.cleanup();
         self.cleanup_cursor_images();
     }

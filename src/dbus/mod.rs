@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use calloop::{InsertError, LoopHandle, stream::StreamSource};
 use cosmic_comp_config::output::comp::OutputState;
 use std::{
-    cell::{RefCell, RefMut},
+    cell::{Ref, RefCell, RefMut},
     collections::HashMap,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -20,6 +20,7 @@ pub mod ei;
 pub mod logind;
 mod name_owners;
 mod power;
+pub mod windows;
 
 #[derive(Clone, Debug)]
 pub struct DBusState(Rc<DBusStateInner>);
@@ -31,6 +32,7 @@ struct DBusStateInner {
     session_conn: zbus::Result<zbus::Connection>,
     system_conn: zbus::Result<zbus::Connection>,
     a11y_keyboard_monitor: RefCell<Option<a11y_keyboard_monitor::A11yKeyboardMonitorState>>,
+    windows: RefCell<Option<windows::WindowsState>>,
     ei_sender: Arc<Mutex<Option<calloop::channel::Sender<crate::libei::EiRequest>>>>,
 }
 
@@ -45,6 +47,7 @@ impl DBusState {
             session_conn,
             system_conn,
             a11y_keyboard_monitor: RefCell::new(None),
+            windows: RefCell::new(None),
             ei_sender: Arc::new(Mutex::new(None)),
         }));
         evlh.insert_source(source, |_, _, _| {}).unwrap();
@@ -67,6 +70,10 @@ impl DBusState {
         &self,
     ) -> Option<RefMut<'_, a11y_keyboard_monitor::A11yKeyboardMonitorState>> {
         RefMut::filter_map(self.0.a11y_keyboard_monitor.borrow_mut(), |x| x.as_mut()).ok()
+    }
+
+    pub fn windows(&self) -> Option<Ref<'_, windows::WindowsState>> {
+        Ref::filter_map(self.0.windows.borrow(), |x| x.as_ref()).ok()
     }
 
     pub fn set_ei_sender(&self, sender: calloop::channel::Sender<crate::libei::EiRequest>) {
@@ -94,6 +101,8 @@ async fn init_session(state: &DBusState) -> zbus::Result<()> {
         A11yKeyboardMonitorState::new(conn, &name_owners, &state.0.executor).await?;
     *state.0.a11y_keyboard_monitor.borrow_mut() = Some(a11y_keyboard_monitor_state);
     ei::init(conn, &name_owners, state.0.ei_sender.clone()).await?;
+    let windows_state = windows::WindowsState::new(conn, &name_owners, &state.0.executor).await?;
+    *state.0.windows.borrow_mut() = Some(windows_state);
     Ok(())
 }
 
