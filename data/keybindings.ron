@@ -3,6 +3,8 @@
     (modifiers: [Super, Shift], key: "Escape"): System(LogOut),
     (modifiers: [Super, Ctrl], key: "Escape"): Debug,
     (modifiers: [Super], key: "Escape"): System(LockScreen),
+    // WMDE: the task manager, where Windows has had it since NT.
+    (modifiers: [Ctrl, Shift], key: "Escape"): Spawn("wmde-taskmgr"),
     (modifiers: [Super], key: "q"): Close,
     (modifiers: [Alt], key: "F4"): Close,
 
