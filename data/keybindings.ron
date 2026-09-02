@@ -108,7 +108,13 @@
     // not need one. The command is a client that hands the request to the service already
     // running on fun.wmde.Screenshot, and the session bus starts that service on the first
     // press of the session.
+    //
+    // Print asks; the three with modifiers do not. Those put the picture on the clipboard,
+    // because a key that takes a shot without showing anything is a key for pasting.
     (modifiers: [], key: "Print"): Spawn("wmde-screenshot gui"),
+    (modifiers: [Shift], key: "Print"): Spawn("wmde-screenshot window"),
+    (modifiers: [Ctrl], key: "Print"): Spawn("wmde-screenshot full"),
+    (modifiers: [Ctrl, Shift], key: "Print"): Spawn("wmde-screenshot screen"),
 
     (modifiers: [Alt], key: "Tab"): NextWindow,
     (modifiers: [Alt, Shift], key: "Tab"): PrevWindow,
