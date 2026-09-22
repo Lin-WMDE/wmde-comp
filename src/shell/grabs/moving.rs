@@ -479,10 +479,12 @@ impl MoveGrab {
             // placeholder back: the drag's own one is made once by
             // `TilingLayout::unmap_as_placeholder` at grab start, and only
             // `Shell::update_pointer_position` ever moves or re-creates it. Of the input paths
-            // that drive this grab only `InputEvent::PointerMotion` calls that - right after
-            // this handler, in the same event - while `PointerMotionAbsolute` and `TouchMotion`
-            // never do, so on a tablet or on an absolute VM pointer a swept workspace would stay
-            // swept for the rest of the drag. Logged once per crossing, not per motion event:
+            // that drive this grab, `InputEvent::PointerMotion`, `PointerMotionAbsolute`,
+            // `TabletToolAxis` and `TabletToolProximity` call that - right after this handler, in
+            // the same event - while `TouchMotion` never does, so on a touchscreen a swept
+            // workspace would stay swept for the rest of the drag. COSMIC 1.8 added the absolute
+            // and tablet paths; touch is what is left. Logged once per crossing, not per motion
+            // event:
             // `cursor_output` is updated right below, so the next crossing finds a live output.
             if cleanup_tiling_drag(&mut shell, &self.cursor_output, Some(&current_output)) {
                 warn!(
@@ -573,12 +575,11 @@ impl MoveGrab {
             // edge, which is exactly where a window snapped to the top keeps its tab row.
             // Suppressed here rather than by clearing `grab_state.stacking_indicator` afterwards,
             // because the hover it mirrors is not the grab's: `hovered_stack` is set only by
-            // `FloatingLayout::update_pointer_position`, which of the input paths that drive this
-            // grab only `InputEvent::PointerMotion` reaches, through
-            // `Shell::update_pointer_position` right after this handler in the same event. So a
-            // cleared indicator would meet an unchanged hover on the next relative motion and be
-            // rebuilt - element, buffers and all - on every one of them, while on
-            // `PointerMotionAbsolute` and `TouchMotion` nothing recomputes the hover at all and
+            // `FloatingLayout::update_pointer_position`, which every input path that drives this
+            // grab reaches through `Shell::update_pointer_position` right after this handler in
+            // the same event - every one but `TouchMotion`. So a cleared indicator would meet an
+            // unchanged hover on the next motion and be rebuilt - element, buffers and all - on
+            // every one of them, while on `TouchMotion` nothing recomputes the hover at all and
             // whatever it holds would be left standing. Suppressing the source is right on both.
             // This reads the pick of the previous motion, one event of lag that no one can see,
             // and the drop itself never depends on it.
