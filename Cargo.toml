@@ -43,6 +43,7 @@ iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
 iced_graphics = { path = "../libcosmic/iced/graphics", features = ["geometry"] }
 indexmap = "2.13"
 keyframe = "1.1.1"
+libc = "0.2"
 libcosmic = { path = "../libcosmic", default-features = false }
 libsystemd = { version = "0.7", optional = true }
 log-panics = { version = "2", features = ["with-backtrace"] }

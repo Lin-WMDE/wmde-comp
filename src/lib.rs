@@ -149,6 +149,22 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
     logger::init_logger()?;
     info!("Cosmic starting up!");
 
+    // WMDE: pin glibc's malloc thresholds. glibc raises `M_MMAP_THRESHOLD` to the size of the
+    // largest mmapped chunk it has freed so far (and `M_TRIM_THRESHOLD` to twice that), so once
+    // one texture-sized allocation has been released, every later one of that size is carved
+    // out of a thread arena, and the holes left behind by closed windows never return to the
+    // kernel. Fixed thresholds disable that adjustment: allocations of 256 KiB and up are
+    // mapped individually and unmapped on free.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `mallopt` takes two plain integers and only changes allocator parameters.
+    unsafe {
+        if libc::mallopt(libc::M_MMAP_THRESHOLD, 256 * 1024) != 1
+            || libc::mallopt(libc::M_TRIM_THRESHOLD, 1024 * 1024) != 1
+        {
+            warn!("Failed to pin the malloc thresholds");
+        }
+    }
+
     profiling::register_thread!("Main Thread");
     #[cfg(feature = "profile-with-tracy")]
     tracy_client::Client::start();
