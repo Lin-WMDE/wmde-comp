@@ -6,6 +6,7 @@ use crate::{
     utils::prelude::*,
 };
 use smithay::{
+    backend::input::InputTime,
     input::pointer::MotionEvent,
     output::Output,
     reexports::wayland_server::{Resource, protocol::wl_output::WlOutput},
@@ -50,7 +51,7 @@ pub fn cancel_grabs(state: &mut State) {
 
     for seat in seats {
         let serial = SERIAL_COUNTER.next_serial();
-        let time = state.common.clock.now().as_millis();
+        let time = InputTime::now();
 
         if let Some(keyboard) = seat.get_keyboard()
             && keyboard.is_grabbed()
