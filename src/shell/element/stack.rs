@@ -876,7 +876,11 @@ impl CosmicStack {
             stack_loc,
             scale,
             alpha,
-            radii.map(|[_, b, _, d]| [0, b, 0, d]).unwrap_or([0; 4]),
+            // WMDE: upstream e8caf335 moved the array to [TL, TR, BR, BL] but missed this
+            // line. The tab strip sits at the top of the stack and keeps the TOP pair,
+            // which is now indices 0 and 1 - indices 1 and 3 are a diagonal in the new
+            // order. The line above was reindexed in the same commit; this one was not.
+            radii.map(|[a, b, _, _]| [a, b, 0, 0]).unwrap_or([0; 4]),
             &mut |elem| push_above(elem.into()),
             Some(&mut |elem| push_below(elem.into())),
         );
