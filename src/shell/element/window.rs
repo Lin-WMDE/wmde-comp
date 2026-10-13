@@ -624,7 +624,7 @@ impl CosmicWindow {
                 let (id, active, theme) = self.0.with_program(|p| {
                     (
                         p.mica_id.clone(),
-                        p.window.is_activated(false),
+                        p.activated.load(Ordering::SeqCst),
                         p.theme.lock().unwrap().clone(),
                     )
                 });
@@ -923,7 +923,8 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .title(win.last_title.lock().unwrap().clone())
             .on_drag(Message::DragStart)
             .on_close(Message::Close)
-            .focused(win.window.is_activated(false))
+            // WMDE: the compositor's own state, not the client's acked one - see `set_activate`.
+            .focused(win.activated.load(Ordering::SeqCst))
             .on_right_click(Message::Menu)
             .is_ssd(true)
             .sharp_corners(sharp_corners);
@@ -975,12 +976,16 @@ impl SpaceElement for CosmicWindow {
             .0
             .with_program(|p| p.activated.load(Ordering::SeqCst) != activated)
         {
-            SpaceElement::set_activate(&self.0, activated);
-            self.0.force_redraw();
+            // WMDE: the window first, then the title bar. `SpaceElement::set_activate` on the
+            // IcedElement rebuilds the title bar right away, and its view reads `activated`;
+            // upstream rebuilt it before the store, so every title bar showed the previous
+            // focus state - an inactive window kept the white title, until its next update.
             self.0.with_program(|p| {
                 p.activated.store(activated, Ordering::SeqCst);
                 SpaceElement::set_activate(&p.window, activated);
             });
+            SpaceElement::set_activate(&self.0, activated);
+            self.0.force_redraw();
         }
     }
     #[profiling::function]
