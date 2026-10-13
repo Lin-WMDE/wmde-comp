@@ -271,19 +271,26 @@ fn init_libinput(
     let libinput_backend = LibinputInputBackend::new(libinput_context.clone());
 
     evlh.insert_source(libinput_backend, move |mut event, _, state| {
+        // WMDE: events can arrive while `init_backend` still waits for the session to
+        // become active, before the KMS backend exists; the device map and rendering are
+        // skipped then, the seat still learns about the device.
         if let InputEvent::DeviceAdded { device } = &mut event {
             state.common.config.read_device(device);
-            state
-                .backend
-                .kms()
-                .input_devices
-                .insert(device.name().into(), device.clone());
-        } else if let InputEvent::DeviceRemoved { device } = &event {
-            state.backend.kms().input_devices.remove(&*device.name());
+            if let BackendData::Kms(kms) = &mut state.backend {
+                kms.input_devices
+                    .insert(device.name().into(), device.clone());
+            }
+        } else if let InputEvent::DeviceRemoved { device } = &event
+            && let BackendData::Kms(kms) = &mut state.backend
+        {
+            kms.input_devices.remove(&*device.name());
         }
 
         state.process_input_event(event, crate::input::InputBackendId::Normal);
 
+        if !matches!(state.backend, BackendData::Kms(_)) {
+            return;
+        }
         for output in state.common.shell.read().outputs() {
             state.backend.kms().schedule_render(output);
         }
@@ -379,6 +386,13 @@ fn init_udev(
     let udev_backend = UdevBackend::new(&seat)?;
 
     let dispatcher = Dispatcher::new(udev_backend, move |event, _, state: &mut State| {
+        // WMDE: nothing to update before the KMS backend exists - `init_backend` waits for
+        // the session to become active first (wmde-greetd's handover) and then adds every
+        // device present from `device_list`. A DRM change event in that window, such as
+        // the greeter's own modeset at login, used to panic in `kms()`.
+        if !matches!(state.backend, BackendData::Kms(_)) {
+            return;
+        }
         let dh = state.common.display_handle.clone();
         match match event {
             UdevEvent::Added {
