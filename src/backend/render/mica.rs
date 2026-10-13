@@ -63,7 +63,11 @@ const SOURCE_SIDE: usize = 256;
 /// Blur radius as a share of the reduced picture's width: about 8 px of 240, which is some
 /// 64 px on a 1920 px wide output.
 const BLUR_SHARE: f32 = 1.0 / 30.0;
-/// Tint opacity over the luminosity-blended wallpaper, Windows 11's Mica values.
+/// Tint colour and its opacity over the luminosity-blended wallpaper, Windows 11's Mica
+/// values. Not the theme's window background: the light one is white, and the luminosity of
+/// white turns any wallpaper white.
+const TINT_DARK: [u8; 4] = [0x20, 0x20, 0x20, 255];
+const TINT_LIGHT: [u8; 4] = [0xf3, 0xf3, 0xf3, 255];
 const TINT_OPACITY_DARK: f32 = 0.8;
 const TINT_OPACITY_LIGHT: f32 = 0.5;
 
@@ -194,14 +198,17 @@ pub fn prepare_output<R: AsGlowRenderer>(
     Some(OutputGuard(()))
 }
 
-/// The tint colour and whether the theme is dark: the window background of the theme.
+/// The Mica tint for the theme's mode, and whether the theme is dark.
 fn tint(theme: &cosmic::Theme) -> ([u8; 4], bool) {
+    let dark = theme.cosmic().is_dark;
+    (if dark { TINT_DARK } else { TINT_LIGHT }, dark)
+}
+
+/// The flat colour of an inactive title bar: the theme's window background, as without Mica.
+fn flat_color(theme: &cosmic::Theme) -> [u8; 4] {
     let base = theme.cosmic().background(false).base;
     let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
-    (
-        [to_u8(base.red), to_u8(base.green), to_u8(base.blue), 255],
-        theme.cosmic().is_dark,
-    )
+    [to_u8(base.red), to_u8(base.green), to_u8(base.blue), 255]
 }
 
 /// The output's source picture, rebuilt if the wallpaper or the tint changed. `None` while
@@ -452,7 +459,7 @@ pub fn element<R: AsGlowRenderer>(
             (texture, generation, src)
         }
         None => {
-            let (texture, generation) = flat(renderer, tint(theme).0)?;
+            let (texture, generation) = flat(renderer, flat_color(theme))?;
             (texture, generation, Rectangle::from_size((1.0, 1.0).into()))
         }
     };
@@ -645,7 +652,7 @@ mod tests {
     #[test]
     fn dark_mica_stays_close_to_the_tint() {
         let reduced = image::RgbImage::from_pixel(16, 9, image::Rgb([30, 90, 200]));
-        let (size, pixels) = build(reduced, [0x20, 0x20, 0x20, 255], true);
+        let (size, pixels) = build(reduced, TINT_DARK, true);
         assert_eq!((size.w, size.h), (16, 9));
         assert_eq!(pixels.len(), 16 * 9 * 4);
         let [r, g, b, a] = pixels[..4] else {
@@ -658,5 +665,17 @@ mod tests {
             assert!((0x10..=0x30).contains(&c), "{r} {g} {b}");
         }
         assert!(b > r);
+    }
+
+    #[test]
+    fn light_mica_is_not_white() {
+        let reduced = image::RgbImage::from_pixel(16, 9, image::Rgb([30, 90, 200]));
+        let (_, pixels) = build(reduced, TINT_LIGHT, false);
+        let [r, g, b, _] = pixels[..4] else {
+            unreachable!()
+        };
+        // 50 % of #F3F3F3 over the wallpaper's hue at #F3F3F3's luminosity.
+        assert!(r < 0xf3 && b > r, "{r} {g} {b}");
+        assert!(r > 0xd0, "{r} {g} {b}");
     }
 }
