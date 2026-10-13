@@ -63,13 +63,17 @@ const SOURCE_SIDE: usize = 256;
 /// Blur radius as a share of the reduced picture's width: about 8 px of 240, which is some
 /// 64 px on a 1920 px wide output.
 const BLUR_SHARE: f32 = 1.0 / 30.0;
-/// Tint colour and its opacity over the luminosity-blended wallpaper, Windows 11's Mica
-/// values. Not the theme's window background: the light one is white, and the luminosity of
-/// white turns any wallpaper white.
+/// Tint colour, Windows 11's Mica values. Not the theme's window background: the light one is
+/// white, and the luminosity of white turns any wallpaper white.
 const TINT_DARK: [u8; 4] = [0x20, 0x20, 0x20, 255];
 const TINT_LIGHT: [u8; 4] = [0xf3, 0xf3, 0xf3, 255];
-const TINT_OPACITY_DARK: f32 = 0.8;
-const TINT_OPACITY_LIGHT: f32 = 0.5;
+/// Tint opacity over the luminosity-blended wallpaper. Weaker than Windows 11's 0.8 and 0.5,
+/// under which the effect is next to invisible on a muted wallpaper.
+const TINT_OPACITY_DARK: f32 = 0.6;
+const TINT_OPACITY_LIGHT: f32 = 0.35;
+/// How much of the wallpaper's own luminosity the tint's replaces. Windows 11 replaces all of
+/// it (1.0); the rest left here keeps sky lighter and blue, forest darker and green.
+const LUMINOSITY_OPACITY: f32 = 0.8;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 /// Bumped on every new source picture, so elements showing it report a new commit.
@@ -355,7 +359,8 @@ fn reduce(pool: &[u8], data: BufferData) -> Option<image::RgbImage> {
 }
 
 /// Blurs the reduced wallpaper and tints it the way Windows 11 builds Mica: the luminosity of
-/// the tint over the hue and saturation of the wallpaper, then the tint itself on top.
+/// the tint over the hue and saturation of the wallpaper (at `LUMINOSITY_OPACITY`), then the
+/// tint itself on top.
 /// Returns RGBA bytes for `Fourcc::Abgr8888`.
 fn build(reduced: image::RgbImage, tint: [u8; 4], dark: bool) -> (Size<i32, Buffer>, Vec<u8>) {
     let sigma = (reduced.width() as f32 * BLUR_SHARE).max(1.0);
@@ -370,9 +375,10 @@ fn build(reduced: image::RgbImage, tint: [u8; 4], dark: bool) -> (Size<i32, Buff
     let mut pixels = Vec::with_capacity(blurred.len() / 3 * 4);
     for pixel in blurred.pixels() {
         let wallpaper = pixel.0.map(|c| c as f32 / 255.0);
-        let blended = set_lum(wallpaper, lum(tint_rgb));
+        let toned = set_lum(wallpaper, lum(tint_rgb));
         for i in 0..3 {
-            let c = blended[i] + (tint_rgb[i] - blended[i]) * tint_opacity;
+            let blended = wallpaper[i] + (toned[i] - wallpaper[i]) * LUMINOSITY_OPACITY;
+            let c = blended + (tint_rgb[i] - blended) * tint_opacity;
             pixels.push((c.clamp(0.0, 1.0) * 255.0).round() as u8);
         }
         pixels.push(255);
@@ -659,12 +665,8 @@ mod tests {
             unreachable!()
         };
         assert_eq!(a, 255);
-        // 80 % tint: near #202020, tinted toward the wallpaper's blue. Gives #1A212E; the
-        // Windows 11 title bar over a blue wallpaper measures #1A202A (ref/w11).
-        for c in [r, g, b] {
-            assert!((0x10..=0x30).contains(&c), "{r} {g} {b}");
-        }
-        assert!(b > r);
+        // Dark, and clearly blue: #162643.
+        assert_eq!([r, g, b], [22, 38, 67]);
     }
 
     #[test]
@@ -674,8 +676,7 @@ mod tests {
         let [r, g, b, _] = pixels[..4] else {
             unreachable!()
         };
-        // 50 % of #F3F3F3 over the wallpaper's hue at #F3F3F3's luminosity.
-        assert!(r < 0xf3 && b > r, "{r} {g} {b}");
-        assert!(r > 0xd0, "{r} {g} {b}");
+        // Light, and clearly blue: #D4DFF4.
+        assert_eq!([r, g, b], [212, 223, 244]);
     }
 }
