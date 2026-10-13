@@ -1034,6 +1034,7 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 if new != state.common.config.cosmic_conf.mica_titlebars {
                     state.common.config.cosmic_conf.mica_titlebars = new;
                     crate::backend::render::mica::set_enabled(new);
+                    tracing::info!(enabled = new, "Mica title bars");
                     // Window themes depend on it: re-apply the current one to every window.
                     let theme = state.common.theme.clone();
                     let mut workspace_guard = state.common.workspace_state.update();

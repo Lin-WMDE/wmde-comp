@@ -50,7 +50,7 @@ use smithay::{
         shm::{BufferData, with_buffer_contents},
     },
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{element::AsGlowRenderer, wayland::clipped_surface::ClippingShader};
 use crate::utils::prelude::*;
@@ -70,6 +70,14 @@ const TINT_OPACITY_LIGHT: f32 = 0.5;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 /// Bumped on every new source picture, so elements showing it report a new commit.
 static GENERATION: AtomicUsize = AtomicUsize::new(1);
+/// Why the last attempt found no picture, logged once per change of reason.
+static LAST_MISS: AtomicUsize = AtomicUsize::new(0);
+
+fn miss(reason: usize, message: &str) {
+    if LAST_MISS.swap(reason, Ordering::Relaxed) != reason {
+        warn!("Mica: {message}, title bars get the flat colour");
+    }
+}
 
 /// Mica on or off, from `mica_titlebars` in the compositor config.
 pub fn enabled() -> bool {
@@ -209,9 +217,16 @@ fn source(
         map.layers_on(Layer::Background)
             .find(|layer| layer.namespace() == WALLPAPER_NAMESPACE)
             .map(|layer| layer.wl_surface().clone())
-    }?;
+    };
+    let Some(surface) = surface else {
+        miss(1, "no wallpaper layer on the output");
+        return None;
+    };
 
-    let commit = with_renderer_surface_state(&surface, |state| state.current_commit())?;
+    let Some(commit) = with_renderer_surface_state(&surface, |state| state.current_commit()) else {
+        miss(2, "the wallpaper layer has no renderer state");
+        return None;
+    };
     let key = SourceKey {
         surface: surface.id(),
         commit,
@@ -225,17 +240,36 @@ fn source(
         return Some((source.generation, source.size, source.pixels.clone()));
     }
 
+    let started = std::time::Instant::now();
     let reduced = with_renderer_surface_state(&surface, |state| {
-        let buffer = state.buffer()?;
-        with_buffer_contents(buffer, |ptr, len, data| unsafe {
+        let Some(buffer) = state.buffer() else {
+            miss(3, "the wallpaper layer has no buffer");
+            return None;
+        };
+        match with_buffer_contents(buffer, |ptr, len, data| unsafe {
             reduce(std::slice::from_raw_parts(ptr, len), data)
-        })
-        .ok()
-        .flatten()
+        }) {
+            Ok(reduced) => reduced,
+            Err(err) => {
+                miss(
+                    4,
+                    &format!("the wallpaper buffer is not readable shm ({err:?})"),
+                );
+                None
+            }
+        }
     })
     .flatten()?;
 
     let (size, pixels) = build(reduced, tint, dark);
+    LAST_MISS.store(0, Ordering::Relaxed);
+    info!(
+        output = name,
+        width = size.w,
+        height = size.h,
+        elapsed = ?started.elapsed(),
+        "Mica: picture built"
+    );
     let source = Source {
         key,
         generation: GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
@@ -267,7 +301,7 @@ fn reduce(pool: &[u8], data: BufferData) -> Option<image::RgbImage> {
             ]
         },
         format => {
-            warn!(?format, "Mica: wallpaper buffer format not supported");
+            miss(5, &format!("wallpaper buffer format {format:?} is not supported"));
             return None;
         }
     };
@@ -275,6 +309,7 @@ fn reduce(pool: &[u8], data: BufferData) -> Option<image::RgbImage> {
     let (width, height) = (data.width.max(0) as usize, data.height.max(0) as usize);
     let (offset, stride) = (data.offset.max(0) as usize, data.stride.max(0) as usize);
     if width == 0 || height == 0 || offset + stride * (height - 1) + width * 4 > pool.len() {
+        miss(6, "the wallpaper buffer lies outside its pool");
         return None;
     }
 
