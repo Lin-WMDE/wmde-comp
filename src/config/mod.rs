@@ -347,6 +347,8 @@ impl Config {
                 .set_screen_filter(filter_conf.color_filter);
         });
 
+        crate::backend::render::mica::set_enabled(cosmic_comp_config.mica_titlebars);
+
         Config {
             dynamic_conf: Self::load_dynamic(&xdg),
             cosmic_conf: cosmic_comp_config,
@@ -1025,6 +1027,21 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                     for output in state.common.shell.read().outputs() {
                         state.backend.schedule_render(output);
                     }
+                }
+            }
+            "mica_titlebars" => {
+                let new = get_config::<bool>(&config, "mica_titlebars");
+                if new != state.common.config.cosmic_conf.mica_titlebars {
+                    state.common.config.cosmic_conf.mica_titlebars = new;
+                    crate::backend::render::mica::set_enabled(new);
+                    // Window themes depend on it: re-apply the current one to every window.
+                    let theme = state.common.theme.clone();
+                    let mut workspace_guard = state.common.workspace_state.update();
+                    state.common.shell.write().set_theme(
+                        theme,
+                        &state.common.xdg_activation_state,
+                        &mut workspace_guard,
+                    );
                 }
             }
             "cursor_shake_to_find" => {

@@ -90,6 +90,7 @@ use smithay_egui::EguiState;
 pub mod animations;
 pub mod cursor;
 pub mod element;
+pub mod mica;
 pub mod shadow;
 pub mod startup_backdrop;
 pub mod wayland;
@@ -775,6 +776,9 @@ where
     // we don't want to hold a shell lock across `cursor_elements`,
     // that is prone to deadlock with the main-thread on some grabs.
     std::mem::drop(shell_ref);
+    // WMDE: the Mica picture title bars crop from, for this output and this frame - the
+    // dragged window included, which `cursor_elements` collects.
+    let _mica = mica::prepare_output(renderer, output, &theme);
 
     let mut push_grab_window = |elem| grab_window_elements.push(elem);
     cursor_elements(

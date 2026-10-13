@@ -1,7 +1,11 @@
 use crate::{
     backend::render::{
-        IndicatorShader, Key, Usage, cursor::CursorState, element::AsGlowRenderer,
-        shadow::ShadowShader, wayland::SurfaceRenderElement,
+        IndicatorShader, Key, Usage,
+        cursor::CursorState,
+        element::AsGlowRenderer,
+        mica::{self, MicaElement},
+        shadow::ShadowShader,
+        wayland::SurfaceRenderElement,
     },
     hooks::{Decorations, HOOKS},
     shell::{
@@ -99,6 +103,8 @@ pub struct CosmicWindowInternal {
     tiled: AtomicBool,
     theme: Mutex<cosmic::Theme>,
     appearance_conf: Mutex<AppearanceConfig>,
+    /// WMDE: render element id of the Mica under the server-side title bar.
+    mica_id: RendererId,
 }
 
 #[repr(u8)]
@@ -206,6 +212,7 @@ impl CosmicWindow {
         let width = window.geometry().size.w;
         let last_title = window.title();
         theme.transparent = theme.cosmic().frosted_windows;
+        mica::window_theme(&mut theme);
 
         if appearance.clip_floating_windows {
             window.set_tiled(true);
@@ -220,6 +227,7 @@ impl CosmicWindow {
                 tiled: AtomicBool::new(false),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
+                mica_id: RendererId::new(),
             },
             (width, SSD_HEIGHT),
             handle,
@@ -609,11 +617,29 @@ impl CosmicWindow {
                 &mut |elem| push_above(elem.into()),
                 Some(&mut |elem| push_below(elem.into())),
             );
+
+            // WMDE: Mica under the title bar, pushed after it so it is drawn beneath.
+            if mica::enabled() {
+                let header = Rectangle::new(geo.loc, Size::from((geo.size.w, SSD_HEIGHT as f64)));
+                let (id, active, theme) = self.0.with_program(|p| {
+                    (
+                        p.mica_id.clone(),
+                        p.window.is_activated(false),
+                        p.theme.lock().unwrap().clone(),
+                    )
+                });
+                if let Some(elem) =
+                    mica::element(renderer, &id, header, scale, radii, active, alpha, &theme)
+                {
+                    push_above(CosmicWindowRenderElement::Mica(elem));
+                }
+            }
         }
     }
 
     pub(crate) fn set_theme(&self, mut theme: cosmic::Theme) {
         theme.transparent = theme.cosmic().frosted_windows;
+        mica::window_theme(&mut theme);
         self.0.with_program(|p| {
             *p.theme.lock().unwrap() = theme.clone();
         });
@@ -865,7 +891,8 @@ impl Program for CosmicWindowInternal {
     }
 
     fn background_color(&self, theme: &cosmic::Theme) -> Color {
-        if self.window.is_maximized(false) {
+        // WMDE: under Mica the maximized title bar is no exception, its background is Mica.
+        if self.window.is_maximized(false) && !mica::enabled() {
             theme
                 .cosmic()
                 .background(theme.cosmic().frosted_windows)
@@ -1441,6 +1468,7 @@ pub enum CosmicWindowRenderElement<R: AsGlowRenderer + ImportAll + ImportMem> {
     Shadow(PixelShaderElement),
     Border(PixelShaderElement),
     Window(SurfaceRenderElement<R>),
+    Mica(MicaElement),
 }
 
 impl<R: AsGlowRenderer + ImportAll + ImportMem> From<IcedRenderElement<R>>
@@ -1470,6 +1498,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.id(),
             CosmicWindowRenderElement::Border(elem) => elem.id(),
             CosmicWindowRenderElement::Window(elem) => elem.id(),
+            CosmicWindowRenderElement::Mica(elem) => elem.id(),
         }
     }
 
@@ -1479,6 +1508,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.current_commit(),
             CosmicWindowRenderElement::Border(elem) => elem.current_commit(),
             CosmicWindowRenderElement::Window(elem) => elem.current_commit(),
+            CosmicWindowRenderElement::Mica(elem) => elem.current_commit(),
         }
     }
 
@@ -1488,6 +1518,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.src(),
             CosmicWindowRenderElement::Border(elem) => elem.src(),
             CosmicWindowRenderElement::Window(elem) => elem.src(),
+            CosmicWindowRenderElement::Mica(elem) => elem.src(),
         }
     }
 
@@ -1497,6 +1528,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.geometry(scale),
             CosmicWindowRenderElement::Border(elem) => elem.geometry(scale),
             CosmicWindowRenderElement::Window(elem) => elem.geometry(scale),
+            CosmicWindowRenderElement::Mica(elem) => elem.geometry(scale),
         }
     }
 
@@ -1506,6 +1538,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.location(scale),
             CosmicWindowRenderElement::Border(elem) => elem.location(scale),
             CosmicWindowRenderElement::Window(elem) => elem.location(scale),
+            CosmicWindowRenderElement::Mica(elem) => elem.location(scale),
         }
     }
 
@@ -1515,6 +1548,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.transform(),
             CosmicWindowRenderElement::Border(elem) => elem.transform(),
             CosmicWindowRenderElement::Window(elem) => elem.transform(),
+            CosmicWindowRenderElement::Mica(elem) => elem.transform(),
         }
     }
 
@@ -1528,6 +1562,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.damage_since(scale, commit),
             CosmicWindowRenderElement::Border(elem) => elem.damage_since(scale, commit),
             CosmicWindowRenderElement::Window(elem) => elem.damage_since(scale, commit),
+            CosmicWindowRenderElement::Mica(elem) => elem.damage_since(scale, commit),
         }
     }
 
@@ -1537,6 +1572,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.opaque_regions(scale),
             CosmicWindowRenderElement::Border(elem) => elem.opaque_regions(scale),
             CosmicWindowRenderElement::Window(elem) => elem.opaque_regions(scale),
+            CosmicWindowRenderElement::Mica(elem) => elem.opaque_regions(scale),
         }
     }
 
@@ -1546,6 +1582,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.alpha(),
             CosmicWindowRenderElement::Border(elem) => elem.alpha(),
             CosmicWindowRenderElement::Window(elem) => elem.alpha(),
+            CosmicWindowRenderElement::Mica(elem) => elem.alpha(),
         }
     }
 
@@ -1555,6 +1592,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.kind(),
             CosmicWindowRenderElement::Border(elem) => elem.kind(),
             CosmicWindowRenderElement::Window(elem) => elem.kind(),
+            CosmicWindowRenderElement::Mica(elem) => elem.kind(),
         }
     }
 
@@ -1564,6 +1602,7 @@ where
             CosmicWindowRenderElement::Shadow(elem) => elem.is_framebuffer_effect(),
             CosmicWindowRenderElement::Border(elem) => elem.is_framebuffer_effect(),
             CosmicWindowRenderElement::Window(elem) => elem.is_framebuffer_effect(),
+            CosmicWindowRenderElement::Mica(elem) => elem.is_framebuffer_effect(),
         }
     }
 }
@@ -1601,6 +1640,16 @@ where
             CosmicWindowRenderElement::Window(elem) => {
                 elem.draw(frame, src, dst, damage, opaque_regions, cache)
             }
+            CosmicWindowRenderElement::Mica(elem) => RenderElement::<GlowRenderer>::draw(
+                elem,
+                R::glow_frame_mut(frame),
+                src,
+                dst,
+                damage,
+                opaque_regions,
+                cache,
+            )
+            .map_err(R::from_gles_error),
         }
     }
 
@@ -1611,6 +1660,9 @@ where
                 elem.underlying_storage(renderer.glow_renderer_mut())
             }
             CosmicWindowRenderElement::Window(elem) => elem.underlying_storage(renderer),
+            CosmicWindowRenderElement::Mica(elem) => {
+                elem.underlying_storage(renderer.glow_renderer_mut())
+            }
         }
     }
 
@@ -1637,6 +1689,16 @@ where
             }
             CosmicWindowRenderElement::Window(elem) => {
                 elem.capture_framebuffer(frame, src, dst, cache)
+            }
+            CosmicWindowRenderElement::Mica(elem) => {
+                RenderElement::<GlowRenderer>::capture_framebuffer(
+                    elem,
+                    R::glow_frame_mut(frame),
+                    src,
+                    dst,
+                    cache,
+                )
+                .map_err(R::from_gles_error)
             }
         }
     }

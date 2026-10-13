@@ -121,6 +121,9 @@ pub struct CosmicCompConfig {
     pub cursor_shake_to_find: bool,
     pub activation_policy: ActivationPolicy,
     pub decoration_preference: DecorationPreference,
+    // WMDE: a trial, see src/backend/render/mica.rs. Upstream has no such field.
+    /// Draws Mica (the blurred, tinted wallpaper) under the title bars the compositor draws
+    pub mica_titlebars: bool,
 }
 
 impl Default for CosmicCompConfig {
@@ -166,6 +169,7 @@ impl Default for CosmicCompConfig {
             cursor_shake_to_find: true,
             activation_policy: ActivationPolicy::default(),
             decoration_preference: DecorationPreference::default(),
+            mica_titlebars: false,
         }
     }
 }
