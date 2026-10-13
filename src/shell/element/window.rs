@@ -644,6 +644,9 @@ impl CosmicWindow {
             *p.theme.lock().unwrap() = theme.clone();
         });
         self.0.set_theme(theme);
+        // WMDE: rebuild the title bar with the new theme now; otherwise it is drawn with the
+        // previous one until its next update, which a live Mica switch never triggers.
+        self.0.force_update();
     }
 
     pub fn update_appearance_conf(&self, appearance: &AppearanceConfig) {

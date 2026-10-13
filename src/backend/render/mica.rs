@@ -301,7 +301,10 @@ fn reduce(pool: &[u8], data: BufferData) -> Option<image::RgbImage> {
             ]
         },
         format => {
-            miss(5, &format!("wallpaper buffer format {format:?} is not supported"));
+            miss(
+                5,
+                &format!("wallpaper buffer format {format:?} is not supported"),
+            );
             return None;
         }
     };
@@ -393,19 +396,17 @@ fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
     }
 }
 
-/// A window theme whose title bar leaves its background to Mica: the transparent background
-/// is the plain one with no alpha, and the title bar is told to use it. Text and icon colours
-/// stay those of the plain background. No-op while Mica is off.
+/// A window theme whose title bar leaves its background to Mica: the plain background with
+/// no alpha. Text and icon colours keep its colours. `transparent` is left alone - set, it
+/// would make the title bar's `IcedElement` add a live blur under it every frame. No-op while
+/// Mica is off.
 pub fn window_theme(theme: &mut cosmic::Theme) {
     if !enabled() {
         return;
     }
     let mut cosmic = theme.cosmic().clone();
-    let mut background = cosmic.background(false).clone();
-    background.base.alpha = 0.0;
-    *cosmic.background_mut(true) = background;
+    cosmic.background_mut(false).base.alpha = 0.0;
     theme.theme_type = ThemeType::Custom(Arc::new(cosmic));
-    theme.transparent = true;
 }
 
 /// Mica under a title bar at `geometry` (logical, relative to the output being rendered).
