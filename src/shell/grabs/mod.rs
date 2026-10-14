@@ -28,7 +28,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::protocol::wl_surface::WlSurface,
     },
-    utils::{Logical, Point, Serial},
+    utils::{Logical, Point, Rectangle, Serial, Size},
     xwayland::xwm,
 };
 
@@ -629,6 +629,7 @@ impl MoveGrab {
         previous_layer: ManagedLayer,
         release: ReleaseMode,
         evlh: LoopHandle<'static, State>,
+        restore_from: Option<(Rectangle<i32, Global>, Size<i32, Logical>)>,
     ) -> MoveGrab {
         MoveGrab::Move(moving::MoveGrab::new(
             start_data,
@@ -641,6 +642,7 @@ impl MoveGrab {
             previous_layer,
             release,
             evlh,
+            restore_from,
         ))
     }
 

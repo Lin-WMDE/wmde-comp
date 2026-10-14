@@ -2515,6 +2515,18 @@ impl Shell {
                     .get::<crate::backend::render::cursor::CursorState>()
                     .is_some_and(|state| state.lock().unwrap().is_magnifying())
             })
+            // WMDE: the restore of a window dragged out of a snap runs with the pointer still.
+            || self.seats.iter().any(|seat| {
+                seat.user_data()
+                    .get::<SeatMoveGrabState>()
+                    .is_some_and(|state| {
+                        state
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(|grab| grab.is_animating())
+                    })
+            })
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -4088,7 +4100,9 @@ impl Shell {
             seat.active_output()
         };
 
-        let (initial_window_location, layer, workspace_handle) =
+        // WMDE: the last element is where a snapped or maximized window was drawn and the size
+        // it gets back, so the move grab can ease between them instead of jumping.
+        let (initial_window_location, layer, workspace_handle, restore_from) =
             if let Some(workspace) = self.space_for_mut(&old_mapped) {
                 let elem_geo = element_geo.or_else(|| workspace.element_geometry(&old_mapped))?;
                 let mut initial_window_location = elem_geo.loc.to_global(workspace.output());
@@ -4124,6 +4138,7 @@ impl Shell {
                 };
 
                 // if this changed the width, the window was tiled in floating mode
+                let mut restore_from = None;
                 if let Some(new_size) = new_size {
                     let output = workspace.output();
                     let ratio =
@@ -4134,9 +4149,18 @@ impl Shell {
                         pos.y - MOVE_GRAB_Y_OFFSET,
                     ))
                     .to_i32_round();
+                    // A tiling grab shrinks the window itself, it gets no restore.
+                    if layer != ManagedLayer::Tiling {
+                        restore_from = Some((elem_geo.to_global(output), new_size));
+                    }
                 }
 
-                (initial_window_location, layer, workspace.handle)
+                (
+                    initial_window_location,
+                    layer,
+                    workspace.handle,
+                    restore_from,
+                )
             } else {
                 let sticky_layer = self
                     .workspaces
@@ -4171,6 +4195,7 @@ impl Shell {
                     new_size = Some(geo.size.as_logical());
                 }
 
+                let mut restore_from = None;
                 if let Some(new_size) = new_size {
                     let ratio = Self::grab_ratio(
                         pos.to_local(&cursor_output).x,
@@ -4182,12 +4207,14 @@ impl Shell {
                         pos.y - MOVE_GRAB_Y_OFFSET,
                     ))
                     .to_i32_round();
+                    restore_from = Some((elem_geo.to_global(&cursor_output), new_size));
                 }
 
                 (
                     initial_window_location,
                     ManagedLayer::Sticky,
                     self.active_space(&cursor_output).unwrap().handle,
+                    restore_from,
                 )
             };
 
@@ -4216,6 +4243,7 @@ impl Shell {
             layer,
             release,
             evlh.clone(),
+            restore_from,
         );
 
         if grab.is_tiling_grab() {

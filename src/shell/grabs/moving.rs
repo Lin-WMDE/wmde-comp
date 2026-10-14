@@ -10,14 +10,15 @@ use crate::{
         element::{CosmicMappedRenderElement, stack_hover::StackHover},
         focus::target::{KeyboardFocusTarget, PointerFocusTarget},
         grabs::GrabType,
-        layout::floating::{TiledCorners, snap::SNAP_LAYOUTS},
+        layout::floating::{ANIMATION_DURATION, TiledCorners, snap::SNAP_LAYOUTS},
     },
-    utils::prelude::*,
+    utils::{prelude::*, tween::EaseRectangle},
     wayland::protocols::toplevel_info::{toplevel_enter_output, toplevel_enter_workspace},
 };
 
 use calloop::LoopHandle;
 use cosmic::theme::CosmicTheme;
+use keyframe::{ease, functions::EaseInOutCubic};
 use smallvec::SmallVec;
 use smithay::{
     backend::{
@@ -55,7 +56,7 @@ use smithay::{
         },
     },
     output::Output,
-    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Scale},
+    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Size},
 };
 use std::{
     collections::HashSet,
@@ -110,6 +111,18 @@ impl SeatMovePendingState {
 
 const RESCALE_ANIMATION_DURATION: f64 = 150.0;
 
+/// WMDE: a window dragged out of a snap or out of maximized gets its pre-snap size back the
+/// moment the drag starts. Drawn as is, it jumps; this eases the drawn rectangle from where the
+/// window sat to its restored size under the pointer, the way snapping into a cell eases in
+/// (same duration, same curve).
+struct RestoreAnimation {
+    start: Instant,
+    /// Where the window was drawn when the drag started, global.
+    from: Rectangle<i32, Logical>,
+    /// The size it is restored to.
+    size: Size<i32, Logical>,
+}
+
 /// WMDE: which half of a move grab `MoveGrabState::render` draws. The dragged window is drawn
 /// in the window stack, under the sticky layer, unless it is sticky itself; the strip and the
 /// stacking indicator are pointer feedback and stay on top of everything.
@@ -135,9 +148,39 @@ pub struct MoveGrabState {
     stacking_indicator: Option<(StackHover, Point<i32, Logical>)>,
     location: Point<f64, Logical>,
     cursor_output: Output,
+    restore: Option<RestoreAnimation>,
 }
 
 impl MoveGrabState {
+    /// WMDE: the rectangle the window is drawn in while [`RestoreAnimation`] runs, global;
+    /// `None` once it has finished.
+    fn restore_geometry(&self) -> Option<Rectangle<i32, Logical>> {
+        let anim = self.restore.as_ref()?;
+        let elapsed = Instant::now().duration_since(anim.start);
+        if elapsed >= ANIMATION_DURATION {
+            return None;
+        }
+        let progress = elapsed.as_secs_f64() / ANIMATION_DURATION.as_secs_f64();
+        // The target follows the pointer, so the window flies to where it is being dragged.
+        let to = Rectangle::new(self.location.to_i32_round() + self.window_offset, anim.size);
+        Some(
+            ease(
+                EaseInOutCubic,
+                EaseRectangle(anim.from),
+                EaseRectangle(to),
+                progress,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// WMDE: whether a frame is still owed to [`RestoreAnimation`].
+    pub fn is_animating(&self) -> bool {
+        self.restore
+            .as_ref()
+            .is_some_and(|anim| Instant::now().duration_since(anim.start) < ANIMATION_DURATION)
+    }
+
     #[profiling::function]
     pub fn render<R>(
         &self,
@@ -161,6 +204,19 @@ impl MoveGrabState {
         } else {
             1.0
         };
+        // WMDE: while the restore runs the window is stretched into the eased rectangle; the
+        // two never meet, a tiling grab has no restore.
+        let restore = self.restore_geometry();
+        let rescale: Scale<f64> = match restore {
+            Some(rect) => {
+                let size = self.window.geometry().size;
+                Scale {
+                    x: rect.size.w as f64 / size.w.max(1) as f64,
+                    y: rect.size.h as f64 / size.h.max(1) as f64,
+                }
+            }
+            None => scale.into(),
+        };
         let alpha = if &self.cursor_output == output {
             1.0
         } else {
@@ -169,6 +225,9 @@ impl MoveGrabState {
 
         let mut window_geo = self.window.geometry();
         window_geo.loc += self.location.to_i32_round() + self.window_offset;
+        if let Some(rect) = restore {
+            window_geo = rect;
+        }
         if output
             .geometry()
             .as_logical()
@@ -181,9 +240,14 @@ impl MoveGrabState {
         let output_scale: Scale<f64> = output.current_scale().fractional_scale().into();
         let scaling_offset =
             self.window_offset - self.window_offset.to_f64().upscale(scale).to_i32_round();
-        let render_location = self.location.to_i32_round() - output.geometry().loc.as_logical()
-            + self.window_offset
-            - scaling_offset;
+        let render_location = match restore {
+            Some(rect) => rect.loc - output.geometry().loc.as_logical(),
+            None => {
+                self.location.to_i32_round() - output.geometry().loc.as_logical()
+                    + self.window_offset
+                    - scaling_offset
+            }
+        };
 
         if part == MoveGrabPart::Overlays {
             // WMDE: the layout strip sits above the dragged window, like the Windows 11 flyout.
@@ -238,7 +302,7 @@ impl MoveGrabState {
                             .geometry()
                             .size
                             .to_f64()
-                            .upscale(scale)
+                            .upscale(rescale)
                             .to_i32_round(),
                     )
                     .as_local(),
@@ -262,7 +326,7 @@ impl MoveGrabState {
                     stack,
                     render_location
                         .to_physical_precise_round(output.current_scale().fractional_scale()),
-                    scale,
+                    rescale,
                 ))
             }
             CosmicMappedRenderElement::Window(window) => {
@@ -270,7 +334,7 @@ impl MoveGrabState {
                     window,
                     render_location
                         .to_physical_precise_round(output.current_scale().fractional_scale()),
-                    scale,
+                    rescale,
                 ))
             }
             x => x,
@@ -288,15 +352,21 @@ impl MoveGrabState {
             &mut |elem| push(map_window_element(elem)),
             &mut |elem| lower_elements.push(map_window_element(elem)),
         );
+        // WMDE: during the restore the shadow is stretched with the window, as the floating
+        // layout does for its own animations; the uniform tiling scale it takes itself.
         if let Some(shadow_element) = self.window.shadow_render_element(
             renderer,
             (render_location - self.window.geometry().loc).to_physical_precise_round(output_scale),
             None,
             output_scale,
-            scale,
+            if restore.is_some() { 1.0 } else { scale },
             alpha,
         ) {
-            push(shadow_element);
+            push(if restore.is_some() {
+                map_window_element(shadow_element)
+            } else {
+                shadow_element
+            });
         }
         for elem in lower_elements.into_iter() {
             push(elem);
@@ -1065,6 +1135,7 @@ impl MoveGrab {
         previous_layer: ManagedLayer,
         release: ReleaseMode,
         evlh: LoopHandle<'static, State>,
+        restore_from: Option<(Rectangle<i32, Global>, Size<i32, Logical>)>,
     ) -> MoveGrab {
         // false-positive: `Output`s hash is based on it's inner ptr
         #[allow(clippy::mutable_key_type)]
@@ -1087,6 +1158,11 @@ impl MoveGrab {
             previous: previous_layer,
             location: start_data.location(),
             cursor_output: cursor_output.clone(),
+            restore: restore_from.map(|(from, size)| RestoreAnimation {
+                start: Instant::now(),
+                from: from.as_logical(),
+                size,
+            }),
         };
 
         *seat
