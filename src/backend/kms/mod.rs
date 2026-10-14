@@ -152,10 +152,6 @@ pub fn init_backend(
     // establish session
     let (session, notifier) = LibSeatSession::new().context("Failed to acquire session")?;
 
-    // setup input
-    let libinput_context = init_libinput(dh, &session, &event_loop.handle())
-        .context("Failed to initialize libinput backend")?;
-
     // watch for gpu events
     let udev_dispatcher = init_udev(session.seat(), &event_loop.handle())
         .context("Failed to initialize udev connection")?;
@@ -194,6 +190,15 @@ pub fn init_backend(
             .dispatch(Some(Duration::from_millis(100)), state)
             .context("Failed to wait for the session to become active")?;
     }
+
+    // setup input
+    // WMDE: only once the session is active. Assigned to the seat while the session waits on
+    // its own VT, libinput opened only some of the input devices - on a VirtualBox guest the
+    // USB tablet was not among them, so the mouse was dead until the first VT switch, whose
+    // resume opened the rest. The activation inside the wait is swallowed by the notifier
+    // above, so nothing would have resumed it.
+    let libinput_context = init_libinput(dh, &session, &event_loop.handle())
+        .context("Failed to initialize libinput backend")?;
 
     // finish backend initialization
     state.backend = BackendData::Kms(KmsState {
