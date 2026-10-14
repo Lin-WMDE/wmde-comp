@@ -18,6 +18,7 @@ use crate::{
         iced::{IcedElement, IcedRenderElement, Program},
         prelude::*,
     },
+    wayland::handlers::background_effect::ComputedBlurRegionCachedState,
 };
 use calloop::LoopHandle;
 use cosmic::iced::{Color, Task};
@@ -64,7 +65,9 @@ use smithay::{
         Buffer, IsAlive, Logical, Physical, Point, Rectangle, Scale, Serial, Size, Transform,
         user_data::UserDataMap,
     },
-    wayland::{pointer_constraints::with_pointer_constraint, seat::WaylandFocus},
+    wayland::{
+        compositor::with_states, pointer_constraints::with_pointer_constraint, seat::WaylandFocus,
+    },
 };
 use std::{
     borrow::Cow,
@@ -199,6 +202,34 @@ impl CosmicWindowInternal {
     fn has_tiled_state(&self) -> bool {
         self.window.is_tiled(false).unwrap_or(false)
     }
+}
+
+/// WMDE: the corner radii of a Mica backdrop covering `backdrop` of a window at `window`, whose
+/// own corners are `radii` ([top left, top right, bottom right, bottom left]): a corner is
+/// rounded only where the backdrop reaches that corner of the window.
+fn mica_corner_radii(
+    backdrop: Rectangle<f64, Logical>,
+    window: Rectangle<f64, Logical>,
+    radii: [u8; 4],
+) -> [u8; 4] {
+    let near = |a: f64, b: f64| (a - b).abs() < 0.5;
+    let left = near(backdrop.loc.x, window.loc.x);
+    let top = near(backdrop.loc.y, window.loc.y);
+    let right = near(
+        backdrop.loc.x + backdrop.size.w,
+        window.loc.x + window.size.w,
+    );
+    let bottom = near(
+        backdrop.loc.y + backdrop.size.h,
+        window.loc.y + window.size.h,
+    );
+    let keep = |reaches: bool, radius: u8| if reaches { radius } else { 0 };
+    [
+        keep(top && left, radii[0]),
+        keep(top && right, radii[1]),
+        keep(bottom && right, radii[2]),
+        keep(bottom && left, radii[3]),
+    ]
 }
 
 impl CosmicWindow {
@@ -581,7 +612,11 @@ impl CosmicWindow {
                 radii[1] = 0;
             }
             let theme = p.theme.lock().unwrap();
-            let frosted = if theme.cosmic().frosted_windows {
+            // WMDE: with Mica on, a client-decorated window that asks for a background effect
+            // gets Mica under it instead of the live blur - see below.
+            let frosted = if !has_ssd && mica::enabled() {
+                0
+            } else if theme.cosmic().frosted_windows {
                 (theme.cosmic().frosted as u8 + 1) as usize
             } else {
                 0
@@ -600,6 +635,58 @@ impl CosmicWindow {
                 Some(&mut |elem| push_below(elem.into())),
             );
         });
+
+        // WMDE: Mica under a client-decorated window that asked for a background effect
+        // (ext_background_effect_v1) - our libcosmic apps do, for the whole window, while Mica is
+        // on, and leave transparent only what should show it: the title bar. As in Windows 11
+        // the backdrop is the window's, not the title bar's, so the compositor never needs to
+        // know where the client put its header. Pushed below the window's own elements.
+        if !has_ssd && mica::enabled() {
+            let (region, id, active, theme) = self.0.with_program(|p| {
+                (
+                    p.window.wl_surface().and_then(|surface| {
+                        with_states(&surface, |states| {
+                            states
+                                .cached_state
+                                .get::<ComputedBlurRegionCachedState>()
+                                .current()
+                                .blur_region
+                                .clone()
+                        })
+                    }),
+                    p.mica_id.clone(),
+                    p.activated.load(Ordering::SeqCst),
+                    p.theme.lock().unwrap().clone(),
+                )
+            });
+            // The region is relative to the window geometry, as the blur reads it. Clients ask
+            // for "everything" with i32::MAX sizes, so it is merged in f64 and clamped to the
+            // window.
+            let backdrop = region
+                .and_then(|rects| {
+                    rects
+                        .into_iter()
+                        .map(|rect| rect.to_f64())
+                        .reduce(|a, b| a.merge(b))
+                })
+                .and_then(|bounds| {
+                    Rectangle::new(geo.loc + bounds.loc, bounds.size).intersection(geo)
+                });
+            if let Some(backdrop) = backdrop {
+                // Round a corner only where the backdrop reaches that corner of the window,
+                // which is clipped with the same radii; elsewhere it is hidden under the window.
+                let radii = if is_maximized {
+                    [0; 4]
+                } else {
+                    mica_corner_radii(backdrop, geo, radii)
+                };
+                if let Some(elem) =
+                    mica::element(renderer, &id, backdrop, scale, radii, active, alpha, &theme)
+                {
+                    push_below(CosmicWindowRenderElement::Mica(elem));
+                }
+            }
+        }
 
         if has_ssd {
             radii[2] = 0;
