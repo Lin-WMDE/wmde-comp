@@ -158,6 +158,14 @@ pub const SNAP_LAYOUTS: &[SnapLayout] = &[
             SnapCell::new(0.5, 0.0, 0.5, 1.0),
         ],
     },
+    // Two rows: the halves turned on their side. Not on the reference, added on request.
+    SnapLayout {
+        id: "rows",
+        cells: &[
+            SnapCell::new(0.0, 0.0, 1.0, 0.5),
+            SnapCell::new(0.0, 0.5, 1.0, 0.5),
+        ],
+    },
     // Four quarters.
     SnapLayout {
         id: "quarters",
