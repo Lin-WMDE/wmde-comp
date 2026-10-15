@@ -23,7 +23,7 @@ pub fn init_backend_auto(
     event_loop: &mut EventLoop<'static, State>,
     state: &mut State,
 ) -> Result<()> {
-    // WMDE: decode the greeter's picture while the backend comes up, see `startup_backdrop`.
+    // WMDE: decode the wallpaper while the backend comes up, see `startup_backdrop`.
     crate::backend::render::startup_backdrop::preload();
 
     let res = match std::env::var("COSMIC_BACKEND") {

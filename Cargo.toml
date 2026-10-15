@@ -24,6 +24,10 @@ cosmic-config = { path = "../libcosmic/cosmic-config", features = [
 cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", rev = "160b086", default-features = false, features = [
     "server",
 ] }
+# wmde-bg renamed its config crate to `wmde-bg-config` (ships the `fun.wmde.Background`
+# id); alias it back to `cosmic-bg-config`, as wmde-portal and wmde-screenshot do. Read for the
+# wallpaper in the first frames (`startup_backdrop`).
+cosmic-bg-config = { package = "wmde-bg-config", path = "../wmde-bg/config" }
 cosmic-settings-config = { git = "https://github.com/pop-os/cosmic-settings-daemon" }
 cosmic-settings-daemon-config = { git = "https://github.com/pop-os/cosmic-settings-daemon", features = [
     "greeter",
@@ -41,7 +45,9 @@ i18n-embed = { version = "0.16", features = [
 i18n-embed-fl = "0.10"
 iced_tiny_skia = { path = "../libcosmic/iced/tiny_skia" }
 iced_graphics = { path = "../libcosmic/iced/graphics", features = ["geometry"] }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# WMDE: the formats wmde-bg decodes (bar hdr), for the wallpaper in the first frames
+# (`startup_backdrop`).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 indexmap = "2.13"
 keyframe = "1.1.1"
 libc = "0.2"

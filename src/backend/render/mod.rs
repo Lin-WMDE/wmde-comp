@@ -1175,12 +1175,12 @@ where
         ControlFlow::Continue(())
     })?;
 
-    // WMDE: the greeter's picture under everything until the wallpaper is there, instead of
-    // `CLEAR_COLOR` (`startup_backdrop`). Not under a session lock: there only the lock draws.
-    if shell.session_lock.is_none()
-        && let Some(backdrop) = startup_backdrop::element(renderer, output)
-    {
-        elements.extend(crop_to_output(backdrop.into()).map(Into::into));
+    // WMDE: the wallpaper under everything until wmde-bg maps it, instead of `CLEAR_COLOR`
+    // (`startup_backdrop`). Not under a session lock: there only the lock draws.
+    if shell.session_lock.is_none() {
+        for backdrop in startup_backdrop::elements(renderer, output) {
+            elements.extend(crop_to_output(backdrop.into()).map(Into::into));
+        }
     }
 
     Ok(elements)
