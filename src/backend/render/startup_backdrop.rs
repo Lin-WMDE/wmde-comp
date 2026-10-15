@@ -196,7 +196,17 @@ fn decode(path: &Path) -> Option<(Vec<u8>, Size<i32, Buffer>)> {
         .and_then(|reader| reader.decode());
     match picture {
         Ok(picture) => {
-            let picture = picture.into_rgba8();
+            // Opaque, as wmde-bg draws it into an Xrgb buffer: alpha is dropped after its
+            // premultiplied resize, so a fully transparent pixel comes out black and any other
+            // keeps its colour, whatever is underneath.
+            let mut picture = picture.into_rgba8();
+            for pixel in picture.pixels_mut() {
+                if pixel[3] == 0 {
+                    pixel.0 = [0, 0, 0, 255];
+                } else {
+                    pixel[3] = 255;
+                }
+            }
             let size = Size::from((picture.width() as i32, picture.height() as i32));
             Some((picture.into_raw(), size))
         }
@@ -300,6 +310,12 @@ pub fn elements<R: AsGlowRenderer>(
                     location: Point<i32, Logical>,
                     src: Option<Rectangle<f64, Logical>>,
                     size: Size<i32, Logical>| {
+        // Without a source rectangle smithay samples one the size of the destination, not of
+        // the texture: the picture would come out at its own size with the edges smeared.
+        let src = src.unwrap_or_else(|| {
+            let full = texture.size();
+            Rectangle::from_size((f64::from(full.w), f64::from(full.h)).into())
+        });
         elements.push(TextureRenderElement::from_static_texture(
             id,
             context_id.clone(),
@@ -308,7 +324,7 @@ pub fn elements<R: AsGlowRenderer>(
             1,
             Transform::Normal,
             None,
-            src,
+            Some(src),
             Some(size),
             None,
             Kind::Unspecified,
