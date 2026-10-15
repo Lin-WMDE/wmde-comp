@@ -1,0 +1,114 @@
+# Один конфиг nFPM на оба формата. Стейджинг готовит `just package-staging`,
+# версию всегда подставляет just через env WMDE_VERSION (см. justfile).
+# ВАЖНО: только ${WMDE_VERSION} без :-дефолта — nFPM раскрывает env через
+# os.ExpandEnv и :- не понимает (версия молча станет 0.0.0~rc0).
+name: wmde-comp
+arch: amd64
+version: ${WMDE_VERSION}
+release: 1
+maintainer: WMDE <wmde@wmde.fun>
+description: |-
+  WMDE wayland compositor (fork of cosmic-comp)
+  Own binary, unit and config namespaces; coexists with cosmic-comp.
+homepage: https://wmde.fun
+license: GPL-3.0-only
+section: x11
+
+# Как в PKGBUILD: рантайм smithay (drm/gbm/egl/input/seat/udev/vulkan/x11),
+# xkbcommon, wayland. xwayland и wmde-session — мягкие (suggests).
+depends:
+  - libc6 | glibc
+  - libgcc-s1 | libgcc
+  - libxkbcommon0
+  - libwayland-client0
+  - libinput10
+  - libgl1
+  - libgbm1
+  - libseat1
+  - libsystemd0
+  - libudev1
+  - libdisplay-info2
+  - libpixman-1-0
+  - libfontconfig1
+
+suggests:
+  - xwayland
+  - wmde-session
+
+contents:
+  - src: target/staging/usr/bin/wmde-comp
+    dst: /usr/bin/wmde-comp
+    file_info: { mode: 0755 }
+  - src: target/staging/usr/lib/systemd/user/wmde-comp.service
+    dst: /usr/lib/systemd/user/wmde-comp.service
+    file_info: { mode: 0644 }
+  - src: target/staging/usr/share/wmde/
+    dst: /usr/share/wmde/
+    type: tree
+  # doc (copyright + changelog.Debian.gz) готовит just package-doc.
+  # Только для deb: в rpm нет %doc-разметки у nFPM,
+  # а лицензия и changelog там и так есть (License-тег + %changelog).
+  - src: target/staging/usr/share/doc/wmde-comp/
+    dst: /usr/share/doc/wmde-comp/
+    type: tree
+    packager: deb
+
+scripts:
+  postinstall: packaging/postinstall.sh
+  postremove: packaging/postremove.sh
+
+# %changelog для rpm генерит just package-staging (иначе E: no-changelogname-tag).
+# Путь от корня репо: nFPM резолвит его от cwd, а не от каталога конфига.
+changelog: target/changelog.yaml
+
+overrides:
+  deb:
+    # display-info: в trixie libdisplay-info2 (soname .so.2), в noble libdisplay-info1.
+    depends:
+      - libc6
+      - libgcc-s1
+      - libxkbcommon0
+      - libwayland-client0
+      - libwayland-server0
+      - libinput10
+      - libgl1
+      - libegl1
+      - libgbm1
+      - libseat1
+      - libsystemd0
+      - libudev1
+      - libdisplay-info2 | libdisplay-info1
+      - libpixman-1-0
+      - libfontconfig1
+      - libfreetype6
+      - libexpat1
+    suggests:
+      - xwayland
+      - wmde-session
+  rpm:
+    # SONAME вместо имён пакетов: имена расходятся между
+    # Fedora и openSUSE, а SONAME предоставляют обе семьи.
+    # display-info: SONAME плавает по версиям (.so.2 в trixie, .so.3 в Fedora/TW),
+    # а бинарь линкуется с тем что было при сборке — поэтому имена пакетов
+    # с булевым OR, а не SONAME (как и gvfs-smb у files).
+    depends:
+      - libc.so.6()(64bit)
+      - libgcc_s.so.1()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libwayland-server.so.0()(64bit)
+      - libinput.so.10()(64bit)
+      - libGL.so.1()(64bit)
+      - libEGL.so.1()(64bit)
+      - libgbm.so.1()(64bit)
+      - libseat.so.1()(64bit)
+      - (libdisplay-info or libdisplay-info3)
+      - libsystemd.so.0()(64bit)
+      - libudev.so.1()(64bit)
+      - libpixman-1.so.0()(64bit)
+      - libfontconfig.so.1()(64bit)
+      - libfreetype.so.6()(64bit)
+      - libexpat.so.1()(64bit)
+    suggests:
+      - xorg-x11-server-Xwayland
+      - wmde-session
