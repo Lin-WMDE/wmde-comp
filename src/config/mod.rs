@@ -479,8 +479,9 @@ impl Config {
                 .collect::<Vec<_>>();
 
             let mut found_outputs = Vec::new();
-            for (name, output_config) in infos.iter().map(|o| &o.connector).zip(configs) {
+            for (name, mut output_config) in infos.iter().map(|o| &o.connector).zip(configs) {
                 let output = outputs.iter().find(|o| &o.name() == name).unwrap().clone();
+                follow_preferred_mode(&output, &mut output_config);
                 let enabled = output_config.enabled.clone();
                 *output
                     .user_data()
@@ -553,6 +554,10 @@ impl Config {
                 for output in &outputs {
                     output.config_mut().enabled = OutputState::Enabled;
                 }
+            }
+
+            for output in &outputs {
+                follow_preferred_mode(output, &mut output.config_mut());
             }
 
             // we don't have a config, so lets generate somewhat sane positions
@@ -1103,5 +1108,69 @@ impl From<Output> for CompOutputInfo {
             make: physical.make,
             model: physical.model,
         })
+    }
+}
+
+/// WMDE: an output whose connector picks its mode from the host window (see
+/// `OutputExt::follows_preferred_mode`) runs the preferred mode, whatever the stored config or
+/// the last applied one says. Everything else in the config stays.
+fn follow_preferred_mode(output: &Output, config: &mut OutputConfig) {
+    if !output.follows_preferred_mode() {
+        return;
+    }
+    if let Some(mode) = output.preferred_mode() {
+        config.mode = ((mode.size.w, mode.size.h), Some(mode.refresh as u32));
+    }
+}
+
+#[cfg(test)]
+mod follow_preferred_mode_tests {
+    use super::*;
+    use smithay::output::{PhysicalProperties, Subpixel};
+
+    fn output(follows: bool) -> Output {
+        let output = Output::new(
+            "Virtual-1".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Unknown".into(),
+                model: "Unknown".into(),
+                serial_number: "Unknown".into(),
+            },
+        );
+        let preferred = Mode {
+            size: (1150, 832).into(),
+            refresh: 59996,
+        };
+        output.add_mode(preferred);
+        output.set_preferred(preferred);
+        if follows {
+            output.set_follows_preferred_mode();
+        }
+        output
+    }
+
+    fn stored() -> OutputConfig {
+        OutputConfig {
+            mode: ((1151, 833), Some(59996)),
+            position: (10, 20),
+            ..OutputConfig::default()
+        }
+    }
+
+    #[test]
+    fn virtual_output_takes_the_preferred_mode() {
+        let mut config = stored();
+        follow_preferred_mode(&output(true), &mut config);
+        assert_eq!(config.mode, ((1150, 832), Some(59996)));
+        assert_eq!(config.position, (10, 20));
+    }
+
+    #[test]
+    fn other_output_keeps_the_stored_mode() {
+        let mut config = stored();
+        follow_preferred_mode(&output(false), &mut config);
+        assert_eq!(config.mode, ((1151, 833), Some(59996)));
     }
 }

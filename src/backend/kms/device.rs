@@ -302,6 +302,27 @@ impl State {
             if let Some(device) = backend.drm_devices.get_mut(&drm_node) {
                 let changes = device.enumerate_surfaces()?;
 
+                // WMDE: a connector that stays on its crtc is not in `changes`, yet a virtual
+                // GPU changes its preferred mode with the host window and signals just this
+                // hotplug. Probe it for real (only the drm master gets a fresh mode list) and
+                // refresh the output's modes; read_outputs then applies the preferred one.
+                for (conn, output) in device.inner.outputs.iter() {
+                    if !output.follows_preferred_mode()
+                        || changes.removed.contains(conn)
+                        || changes.added.iter().any(|(c, _)| c == conn)
+                    {
+                        continue;
+                    }
+                    let drm = device.drm.device_mut();
+                    if let Err(err) = drm
+                        .get_connector(*conn, true)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|_| populate_modes(drm, output, *conn, false, (0, 0)))
+                    {
+                        warn!(?err, "Failed to refresh modes of {}", output.name());
+                    }
+                }
+
                 let mut w = self.common.shell.read().global_space().size.w as u32;
                 for conn in changes.removed {
                     // contains conns with updated crtcs, just drop the surface and re-create
@@ -1228,6 +1249,13 @@ fn create_output_for_conn(drm: &mut DrmDevice, conn: connector::Handle) -> Resul
         output
             .user_data()
             .insert_if_missing(|| EdidProduct::from(edid.vendor_product()));
+    }
+    // WMDE: the property is immutable and absent on real hardware (an error here is a no).
+    if matches!(
+        drm_helpers::get_property_val(drm, conn, "hotplug_mode_update"),
+        Ok((_, 1))
+    ) {
+        output.set_follows_preferred_mode();
     }
     Ok(output)
 }

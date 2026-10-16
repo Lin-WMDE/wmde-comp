@@ -36,9 +36,16 @@ pub trait OutputExt {
     fn config_mut(&self) -> RefMut<'_, OutputConfig>;
 
     fn edid(&self) -> Option<&EdidProduct>;
+
+    /// WMDE: the connector carries `hotplug_mode_update` = 1, which virtual GPUs (vmwgfx,
+    /// vboxvideo, qxl, virtio-gpu) set when the host picks the mode: the output then always
+    /// runs the connector's preferred mode, the stored config does not pin one.
+    fn follows_preferred_mode(&self) -> bool;
+    fn set_follows_preferred_mode(&self);
 }
 
 struct Vrr(AtomicU8);
+struct FollowsPreferredMode;
 struct VrrSupport(AtomicU8);
 struct Mirroring(Mutex<Option<WeakOutput>>);
 
@@ -166,5 +173,14 @@ impl OutputExt for Output {
 
     fn edid(&self) -> Option<&EdidProduct> {
         self.user_data().get()
+    }
+
+    fn follows_preferred_mode(&self) -> bool {
+        self.user_data().get::<FollowsPreferredMode>().is_some()
+    }
+
+    fn set_follows_preferred_mode(&self) {
+        self.user_data()
+            .insert_if_missing_threadsafe(|| FollowsPreferredMode);
     }
 }
