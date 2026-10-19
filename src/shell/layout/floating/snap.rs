@@ -19,7 +19,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::TiledCorners;
 
-use crate::utils::prelude::*;
+use crate::{shell::grabs::ResizeEdge, utils::prelude::*};
 
 /// One cell of a layout, as a fraction of the work area.
 ///
@@ -62,6 +62,47 @@ impl SnapCell {
             Size::from(((x1 - x0).max(1), (y1 - y0).max(1))),
         )
         .as_local()
+    }
+
+    /// This cell after the window was resized to `rect` by dragging `edges`.
+    ///
+    /// Only the fractions of the moved edges are taken from `rect`; the others are kept as
+    /// they were. Rebuilding the whole cell from pixels would turn an exact `0.5` into
+    /// `526/1053` on an odd-sized work area, and the cell would stop being a half
+    /// ([`Self::as_tiled_corner`]) for nothing but a click on its edge.
+    pub fn with_moved_edges(
+        self,
+        edges: ResizeEdge,
+        rect: Rectangle<i32, Local>,
+        work_area: Rectangle<i32, Logical>,
+    ) -> SnapCell {
+        // The fraction of an edge now at `px`; the old one while it still lands on that pixel,
+        // so an edge that did not move keeps its exact fraction.
+        let refit = |old: f64, px: i32, origin: i32, len: i32| {
+            if origin + (old * f64::from(len)).round() as i32 == px {
+                old
+            } else {
+                f64::from(px - origin) / f64::from(len)
+            }
+        };
+        let (ox, oy) = (work_area.loc.x, work_area.loc.y);
+        let (w, h) = (work_area.size.w, work_area.size.h);
+        let mut cell = self;
+        if edges.contains(ResizeEdge::LEFT) {
+            let right = cell.x + cell.w;
+            cell.x = refit(cell.x, rect.loc.x, ox, w);
+            cell.w = right - cell.x;
+        } else if edges.contains(ResizeEdge::RIGHT) {
+            cell.w = refit(cell.x + cell.w, rect.loc.x + rect.size.w, ox, w) - cell.x;
+        }
+        if edges.contains(ResizeEdge::TOP) {
+            let bottom = cell.y + cell.h;
+            cell.y = refit(cell.y, rect.loc.y, oy, h);
+            cell.h = bottom - cell.y;
+        } else if edges.contains(ResizeEdge::BOTTOM) {
+            cell.h = refit(cell.y + cell.h, rect.loc.y + rect.size.h, oy, h) - cell.y;
+        }
+        cell
     }
 
     /// The [`TiledCorners`] this cell is the same rectangle as, if there is one.
@@ -337,6 +378,45 @@ mod tests {
                         "{} leaves a seam at gap {inner}",
                         layout.id
                     );
+                }
+            }
+        }
+    }
+
+    /// Moving one edge leaves the other fractions exactly as they were, and the moved edge
+    /// lands back on the pixel it was moved to.
+    #[test]
+    fn moved_edges_keep_the_rest_of_the_cell() {
+        for work_area in areas() {
+            let left = SnapCell::new(0.0, 0.0, 0.5, 1.0);
+            let right = SnapCell::new(0.5, 0.0, 0.5, 1.0);
+            let mut geo = left.relative_geometry(work_area, (0, 0));
+            geo.size.w += 137;
+            let moved = left.with_moved_edges(ResizeEdge::RIGHT, geo, work_area);
+            assert_eq!((moved.x, moved.y, moved.h), (0.0, 0.0, 1.0));
+            assert_eq!(moved.relative_geometry(work_area, (0, 0)), geo);
+
+            let mut geo = right.relative_geometry(work_area, (0, 0));
+            geo.loc.x += 137;
+            geo.size.w -= 137;
+            let moved = right.with_moved_edges(ResizeEdge::LEFT, geo, work_area);
+            assert_eq!((moved.y, moved.h), (0.0, 1.0));
+            assert_eq!(
+                moved.x + moved.w,
+                1.0,
+                "the far edge stays on the screen edge"
+            );
+            assert_eq!(moved.relative_geometry(work_area, (0, 0)), geo);
+
+            // A click without movement changes nothing, on an odd height too - the quarter
+            // stays a quarter.
+            for corner in [TiledCorners::TopLeft, TiledCorners::BottomRight] {
+                for edges in [ResizeEdge::TOP_LEFT, ResizeEdge::BOTTOM_RIGHT] {
+                    let cell = corner.as_cell();
+                    let geo = cell.relative_geometry(work_area, (0, 0));
+                    let same = cell.with_moved_edges(edges, geo, work_area);
+                    assert_eq!(same, cell, "{corner:?} {edges:?}");
+                    assert_eq!(same.as_tiled_corner(), Some(corner));
                 }
             }
         }
