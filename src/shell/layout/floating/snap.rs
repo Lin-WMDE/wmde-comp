@@ -11,9 +11,9 @@
 //! computes its geometry through here, so drag-to-edge snapping and the strip cannot place the
 //! same half of the screen in two different rectangles.
 //!
-//! A snapped window sits **flush** against the edge of the work area; the theme's gap goes
-//! between neighbouring windows only. There is nothing between a window and the screen for a
-//! gap to separate, and it is what lets the corners that touch the edge be squared.
+//! A snapped window sits **flush** against the edge of the work area and against its
+//! neighbours: snapped windows meet edge to edge, as they do on Windows 11. The theme's gaps
+//! belong to the tiling layout and are not applied here.
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -38,18 +38,16 @@ impl SnapCell {
         Self { x, y, w, h }
     }
 
-    /// Where this cell lands on `work_area`, with the theme's gaps applied.
+    /// Where this cell lands on `work_area`.
     ///
-    /// Flush with the work area on any edge the cell shares with it, and separated from a
-    /// neighbouring cell by the theme's `inner` gap.
+    /// Flush with the work area on every edge it shares with it, and edge to edge with a
+    /// neighbouring cell. `_gaps` is not applied: it stays in the signature so the call sites
+    /// keep upstream's shape and merges stay cheap.
     pub fn relative_geometry(
         &self,
         work_area: Rectangle<i32, Logical>,
-        gaps: (i32, i32),
+        _gaps: (i32, i32),
     ) -> Rectangle<i32, Local> {
-        let (_, inner) = gaps;
-        let half = inner / 2;
-
         // Round the far edge from the fraction as well, instead of adding a rounded width to a
         // rounded origin: that keeps two cells sharing an edge from overlapping or leaving a
         // one-pixel seam when the fraction does not divide the area evenly.
@@ -59,23 +57,9 @@ impl SnapCell {
         let x1 = work_area.loc.x + edge(self.x + self.w, work_area.size.w);
         let y1 = work_area.loc.y + edge(self.y + self.h, work_area.size.h);
 
-        // The gap goes between windows, never between a window and the screen: a snapped
-        // window sits flush against the edge of the work area. Each internal edge gives up
-        // half a gap and its neighbour gives up the other half, so the gap between two windows
-        // comes out as `inner`.
-        let at_start = |frac: f64| frac.abs() < f64::EPSILON;
-        let at_end = |frac: f64| (frac - 1.0).abs() < f64::EPSILON;
-        let left = if at_start(self.x) { 0 } else { half };
-        let top = if at_start(self.y) { 0 } else { half };
-        let right = if at_end(self.x + self.w) { 0 } else { half };
-        let bottom = if at_end(self.y + self.h) { 0 } else { half };
-
         Rectangle::new(
-            Point::from((x0 + left, y0 + top)),
-            Size::from((
-                (x1 - x0 - left - right).max(1),
-                (y1 - y0 - top - bottom).max(1),
-            )),
+            Point::from((x0, y0)),
+            Size::from(((x1 - x0).max(1), (y1 - y0).max(1))),
         )
         .as_local()
     }
@@ -229,9 +213,8 @@ mod tests {
             .map(|(x, y, w, h)| Rectangle::new(Point::from((x, y)), Size::from((w, h))))
     }
 
-    /// A snapped window touches the screen. The gap is for the space between two windows -
-    /// there is nothing between a window and the edge of the work area for it to separate,
-    /// and it is what lets the corners that touch the edge be squared.
+    /// A snapped window touches the screen, and it is what lets the corners that touch the
+    /// edge be squared.
     #[test]
     fn cells_are_flush_with_the_work_area() {
         for work_area in areas() {
@@ -304,10 +287,10 @@ mod tests {
         }
     }
 
-    /// Two windows sharing an internal edge are separated by the whole gap - each gives up
-    /// half of it.
+    /// Two snapped windows meet edge to edge whatever gap the theme sets - the gap is the
+    /// tiling layout's, not the snapping's.
     #[test]
-    fn neighbours_are_separated_by_the_gap() {
+    fn neighbours_meet_edge_to_edge() {
         for work_area in areas() {
             for inner in GAPS {
                 let left =
@@ -315,10 +298,46 @@ mod tests {
                 let right =
                     SnapCell::new(0.5, 0.0, 0.5, 1.0).relative_geometry(work_area, (0, inner));
                 assert_eq!(
-                    right.loc.x - (left.loc.x + left.size.w),
-                    inner - inner % 2,
-                    "gap between halves at inner={inner}"
+                    right.loc.x,
+                    left.loc.x + left.size.w,
+                    "seam between halves at inner={inner}"
                 );
+                let top =
+                    SnapCell::new(0.0, 0.0, 1.0, 0.5).relative_geometry(work_area, (0, inner));
+                let bottom =
+                    SnapCell::new(0.0, 0.5, 1.0, 0.5).relative_geometry(work_area, (0, inner));
+                assert_eq!(
+                    bottom.loc.y,
+                    top.loc.y + top.size.h,
+                    "seam between rows at inner={inner}"
+                );
+            }
+        }
+    }
+
+    /// The cells of a layout cover the work area completely. With
+    /// [`cells_tile_without_overlap`] holding, equal total area means there is no seam left
+    /// anywhere - including between the thirds, where the fractions do not divide evenly.
+    #[test]
+    fn cells_cover_the_work_area() {
+        for work_area in areas() {
+            for inner in GAPS {
+                for layout in SNAP_LAYOUTS {
+                    let covered: i32 = layout
+                        .cells
+                        .iter()
+                        .map(|c| {
+                            let geo = c.relative_geometry(work_area, (0, inner));
+                            geo.size.w * geo.size.h
+                        })
+                        .sum();
+                    assert_eq!(
+                        covered,
+                        work_area.size.w * work_area.size.h,
+                        "{} leaves a seam at gap {inner}",
+                        layout.id
+                    );
+                }
             }
         }
     }
