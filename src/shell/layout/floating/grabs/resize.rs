@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::shared_edge;
 use crate::{
     backend::render::cursor::CursorState,
     shell::{
@@ -13,7 +14,7 @@ use crate::{
 };
 use smithay::{
     backend::input::{ButtonState, InputTime, TabletToolDescriptor},
-    desktop::{WindowSurface, space::SpaceElement},
+    desktop::{WindowSurface, layer_map_for_output, space::SpaceElement},
     input::{
         Seat,
         pointer::{
@@ -75,6 +76,56 @@ pub struct ResizeSurfaceGrab {
     initial_window_size: Size<i32, Logical>,
     last_window_size: Size<i32, Logical>,
     release: ReleaseMode,
+    // WMDE: the snapped windows that move with the dragged edge, see `shared_edge`.
+    group: Option<SharedEdgeGrab>,
+}
+
+/// WMDE: a resize that moves a whole line of snapped windows, see [`shared_edge`].
+struct SharedEdgeGrab {
+    /// Every window on the line, the grabbed one included.
+    members: Vec<GroupMember>,
+    /// The work area the line was found on. The members stop following when it changes: the
+    /// layout has re-placed them for the new one.
+    work_area: Rectangle<i32, Logical>,
+}
+
+struct GroupMember {
+    window: CosmicMapped,
+    edges: ResizeEdge,
+    initial: Rectangle<i32, Local>,
+    last: Rectangle<i32, Local>,
+    /// Alive and still snapped in this layer. A window that stops being either - closed,
+    /// maximized, dragged away - leaves the group for the rest of the drag.
+    active: bool,
+}
+
+/// WMDE: whether `window` is still a snapped window that may follow a shared edge.
+fn is_snapped(window: &CosmicMapped) -> bool {
+    window.floating_tiled.lock().unwrap().is_some() && !window.is_maximized(true)
+}
+
+/// WMDE: the size limits a resize keeps `window` within; the defaults are upstream's.
+fn size_limits(window: &CosmicMapped) -> (Size<i32, Logical>, Size<i32, Logical>) {
+    let (min, max) = (window.min_size(), window.max_size());
+    (
+        (
+            min.map(|s| s.w).unwrap_or(360),
+            min.map(|s| s.h).unwrap_or(240),
+        )
+            .into(),
+        (
+            max.map(|s| s.w).unwrap_or(i32::MAX),
+            max.map(|s| s.h).unwrap_or(i32::MAX),
+        )
+            .into(),
+    )
+}
+
+/// WMDE: takes a window out of a group mid-drag, leaving it where it is.
+fn release_member(window: &CosmicMapped) {
+    window.set_resizing(false);
+    *window.resize_state.lock().unwrap() = None;
+    window.configure();
 }
 
 impl ResizeSurfaceGrab {
@@ -89,6 +140,11 @@ impl ResizeSurfaceGrab {
                 .0
                 .store(false, Ordering::SeqCst);
             return true;
+        }
+
+        // WMDE: a shared edge moves the whole line instead.
+        if self.group.is_some() {
+            return self.update_group(location);
         }
 
         let (mut dx, mut dy) = (location - self.start_data.location().as_global()).into();
@@ -179,6 +235,123 @@ impl ResizeSurfaceGrab {
         }
 
         false
+    }
+
+    /// WMDE: [`Self::update_location`] for a group. One offset of the line per axis moves
+    /// every member, so both sides of the line always land on the same pixel.
+    fn update_group(&mut self, location: Point<f64, Global>) -> bool {
+        let delta = location - self.start_data.location().as_global();
+        let Some(group) = self.group.as_mut() else {
+            return false;
+        };
+        if layer_map_for_output(&self.output).non_exclusive_zone() != group.work_area {
+            return false;
+        }
+
+        for member in group.members.iter_mut().filter(|m| m.active) {
+            if !member.window.alive() {
+                member.active = false;
+            } else if !is_snapped(&member.window) {
+                member.active = false;
+                release_member(&member.window);
+            }
+        }
+
+        let ranges = |horizontal: bool| {
+            group.members.iter().filter(|m| m.active).map(move |m| {
+                let (min, max) = size_limits(&m.window);
+                if horizontal {
+                    shared_edge::delta_range(m.initial, m.edges, true, min.w, max.w)
+                } else {
+                    shared_edge::delta_range(m.initial, m.edges, false, min.h, max.h)
+                }
+            })
+        };
+        let d = Point::<i32, Local>::from((
+            shared_edge::clamp(delta.x.round() as i32, ranges(true)),
+            shared_edge::clamp(delta.y.round() as i32, ranges(false)),
+        ));
+
+        for member in group.members.iter_mut().filter(|m| m.active) {
+            member.last = shared_edge::apply(member.initial, member.edges, d);
+            member.window.set_resizing(true);
+            member
+                .window
+                .set_geometry(member.last.to_global(&self.output));
+            if member.window.latest_size_committed() {
+                member.window.configure();
+            }
+        }
+
+        false
+    }
+
+    /// WMDE: ends a group resize. Every member settles the way the grabbed window does, and
+    /// keeps its new proportions in its cell, so they survive an output change and the next
+    /// drag of the same line finds it again. Runs before anything else in [`Self::ungrab`]:
+    /// a member left `Resizing` would refuse every later resize.
+    fn finish_group(&mut self) {
+        let Some(group) = self.group.take() else {
+            return;
+        };
+        let work_area = layer_map_for_output(&self.output).non_exclusive_zone();
+
+        for member in group.members.into_iter().filter(|m| m.active) {
+            if !member.window.alive() {
+                continue;
+            }
+            if !is_snapped(&member.window) {
+                release_member(&member.window);
+                continue;
+            }
+            if work_area == group.work_area
+                && let Some(cell) = member.window.floating_tiled.lock().unwrap().as_mut()
+            {
+                *cell = cell.with_moved_edges(member.edges, member.last, work_area);
+            }
+            // The grabbed window is settled by the rest of `ungrab`, as in a resize of its own.
+            if member.window == self.window {
+                continue;
+            }
+            member.window.set_resizing(false);
+            member.window.configure();
+            let mut resize_state = member.window.resize_state.lock().unwrap();
+            if let Some(ResizeState::Resizing(resize_data)) = *resize_state {
+                *resize_state = Some(ResizeState::WaitingForCommit(resize_data));
+            }
+        }
+    }
+
+    /// WMDE: makes this the resize of every snapped window on the dragged line.
+    ///
+    /// `members` are `(window, edges on the line, rectangle)` and include the grabbed window.
+    /// Each gets a resize state of its own, so [`Self::apply_resize_to_location`] keeps its far
+    /// edge in place as its commits arrive.
+    pub fn with_group(
+        mut self,
+        members: Vec<(CosmicMapped, ResizeEdge, Rectangle<i32, Local>)>,
+        work_area: Rectangle<i32, Logical>,
+    ) -> Self {
+        let members = members
+            .into_iter()
+            .map(|(window, edges, initial)| {
+                *window.resize_state.lock().unwrap() = Some(ResizeState::Resizing(ResizeData {
+                    edges,
+                    initial_window_location: initial.loc,
+                    initial_window_size: initial.size.as_logical(),
+                }));
+                window.moved_since_mapped.store(true, Ordering::SeqCst);
+                GroupMember {
+                    window,
+                    edges,
+                    initial,
+                    last: initial,
+                    active: true,
+                }
+            })
+            .collect();
+        self.group = Some(SharedEdgeGrab { members, work_area });
+        self
     }
 
     pub fn grab_type(&self) -> GrabType {
@@ -573,6 +746,7 @@ impl ResizeSurfaceGrab {
             last_window_size: initial_window_size,
             release,
             edge_snap_threshold,
+            group: None,
         }
     }
 
@@ -657,16 +831,21 @@ impl ResizeSurfaceGrab {
                         }
                     }
                 }
-                floating_layer.space.map_element(
-                    window,
-                    new_location.to_local(output).as_logical(),
-                    false,
-                );
+                // WMDE: relocate rather than map: `map_element` also raises the window, and
+                // in a shared-edge resize every commit of a neighbour would pull it above the
+                // window being dragged.
+                floating_layer
+                    .space
+                    .relocate_element(&window, new_location.to_local(output).as_logical());
             }
         }
     }
 
     fn ungrab(&mut self) {
+        // WMDE: the members first - the grabbed window may be dead, and then the rest returns
+        // early.
+        self.finish_group();
+
         // No more buttons are pressed, release the grab.
         self.seat
             .user_data()

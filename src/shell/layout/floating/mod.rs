@@ -848,7 +848,7 @@ impl FloatingLayout {
             let size = mapped.geometry().size;
             mapped.moved_since_mapped.store(true, Ordering::SeqCst);
 
-            Some(grabs::ResizeSurfaceGrab::new(
+            let grab = grabs::ResizeSurfaceGrab::new(
                 start_data,
                 mapped.clone(),
                 edges,
@@ -858,10 +858,75 @@ impl FloatingLayout {
                 size,
                 seat,
                 release,
-            ))
+            );
+            // WMDE: snapped windows sharing the dragged edge resize together.
+            Some(match self.shared_edge_members(mapped, edges) {
+                Some((members, work_area)) => grab.with_group(members, work_area),
+                None => grab,
+            })
         } else {
             None
         }
+    }
+
+    /// WMDE: the snapped windows that move with `edges` of `mapped`, and the work area they
+    /// were found on; `None` for an ordinary one-window resize. See `grabs/shared_edge.rs`.
+    ///
+    /// A window's rectangle is the one last requested for it rather than the one it last
+    /// committed: right after a drag the neighbours' new sizes may not be committed yet, and the
+    /// requested rectangles are the ones that meet edge to edge.
+    #[allow(clippy::type_complexity)]
+    fn shared_edge_members(
+        &mut self,
+        mapped: &CosmicMapped,
+        edges: ResizeEdge,
+    ) -> Option<(
+        Vec<(CosmicMapped, ResizeEdge, Rectangle<i32, Local>)>,
+        Rectangle<i32, Logical>,
+    )> {
+        let snapped =
+            |m: &CosmicMapped| m.floating_tiled.lock().unwrap().is_some() && !m.is_maximized(true);
+        if !snapped(mapped) {
+            return None;
+        }
+        let output = self.space.outputs().next()?.clone();
+        let work_area = layer_map_for_output(&output).non_exclusive_zone();
+
+        let candidates: Vec<(CosmicMapped, Rectangle<i32, Local>)> = self
+            .space
+            .elements()
+            .filter(|m| {
+                snapped(m)
+                    && !matches!(
+                        self.animations.get(*m),
+                        Some(Animation::Minimize { .. } | Animation::Unminimize { .. })
+                    )
+            })
+            .filter_map(|m| {
+                let rect = m
+                    .active_window()
+                    .global_geometry()
+                    .map(|geo| geo.to_local(&output))
+                    .or_else(|| self.space.element_geometry(m).map(RectExt::as_local))?;
+                Some((m.clone(), rect))
+            })
+            .collect();
+        let grabbed = candidates.iter().position(|(m, _)| m == mapped)?;
+        let rects: Vec<_> = candidates.iter().map(|(_, rect)| *rect).collect();
+        let members = grabs::shared_edge::select(&rects, grabbed, edges)?;
+
+        let members = members
+            .into_iter()
+            .map(|member| {
+                let (window, rect) = &candidates[member.idx];
+                // A window still sliding into its cell would be drawn stretched towards it.
+                if matches!(self.animations.get(window), Some(Animation::Tiled { .. })) {
+                    self.animations.remove(window);
+                }
+                (window.clone(), member.edges, *rect)
+            })
+            .collect();
+        Some((members, work_area))
     }
 
     pub fn resize(
