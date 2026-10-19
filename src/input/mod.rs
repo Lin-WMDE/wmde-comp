@@ -2458,9 +2458,10 @@ impl State {
         // `wayland::handlers::data_device`). A drag started by an X11 client runs on smithay's
         // private `XwmDndSource`, which cannot be named here, so Esc leaves that one alone.
         // WMDE: and the keyboard grab of an open popup, so Esc closes an applet's popup as it
-        // did in 1.8. Upstream dropped it from the list and left Esc to the client; libcosmic
-        // menus close themselves, but no applet overrides `on_escape`, and their popups stayed
-        // open.
+        // did in 1.8. Upstream dropped it from the list and left Esc to the client, but no
+        // applet overrides `on_escape`, and their popups stayed open. Intercepted here, Esc
+        // never reaches the client, so `PrivateAction::Escape` dismisses the whole popup chain
+        // through `PopupGrab::ungrab`, menus of libcosmic apps included.
         let keyboard_grabbed = keyboard.with_grab(|_serial, grab| {
             grab.is::<SwapWindowGrab>() || grab.is::<PopupKeyboardGrab<State>>()
         }) == Some(true);
@@ -2762,8 +2763,12 @@ impl State {
                 }
 
                 // could this potentially become a modifier-only binding?
+                // WMDE: only the press of the modifier itself queues it. Upstream queued it again
+                // on every key pressed while the modifier was held, so Super+z with z unbound
+                // still opened the Start menu once Super was released.
                 if binding.key.is_none()
                     && key_state == KeyState::Pressed
+                    && handle.modified_sym().is_modifier_key()
                     && cosmic_modifiers_eq_smithay(&binding.modifiers, modifiers)
                 {
                     modifiers_queue.set(backend_id, binding.clone());

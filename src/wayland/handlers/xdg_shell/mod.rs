@@ -89,12 +89,14 @@ impl XdgShellHandler for State {
 
     fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
         let seat = Seat::from_resource(&seat).unwrap();
+        let parent = surface.get_parent_surface();
         let kind = PopupKind::Xdg(surface);
         let maybe_root = find_popup_root_surface(&kind).ok();
         if maybe_root.is_none() {
             tracing::warn!("No root surface found for popup grab.");
             return;
         }
+        let starts_chain = parent == maybe_root;
         let maybe_root: Option<KeyboardFocusTarget> = maybe_root.and_then(|root| {
             let shell = self.common.shell.read();
             shell
@@ -111,6 +113,20 @@ impl XdgShellHandler for State {
         });
 
         if let Some(root) = maybe_root {
+            // WMDE: xdg-shell always allows a grab on a popup of a toplevel, but smithay keeps
+            // one popup chain per seat and answers a new chain started while an old one is
+            // still live with NotTheTopmostPopup, a protocol error that kills the requesting
+            // client. A chain left behind with its input grabs gone would kill the next client
+            // to open a menu, so dismiss it here and let the new chain take its place.
+            if starts_chain
+                && let Some(mut stale) = seat
+                    .user_data()
+                    .get::<PopupGrabData>()
+                    .and_then(|x| x.take())
+                && !stale.has_ended()
+            {
+                stale.ungrab(PopupUngrabStrategy::All);
+            }
             let target = root;
             let ret = self.common.popups.grab_popup(target, kind, &seat, serial);
             match ret {

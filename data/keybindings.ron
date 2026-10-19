@@ -116,6 +116,10 @@
     (modifiers: [Ctrl], key: "Print"): Spawn("wmde-screenshot full"),
     (modifiers: [Ctrl, Shift], key: "Print"): Spawn("wmde-screenshot screen"),
 
+    // WMDE: Super pressed and released on its own opens and closes the Start menu, as in
+    // Windows. System(Launcher) takes its command from system_actions.ron, which calls
+    // fun.wmde.StartMenu on the session bus.
+    (modifiers: [Super]): System(Launcher),
     (modifiers: [Alt], key: "Tab"): NextWindow,
     (modifiers: [Alt, Shift], key: "Tab"): PrevWindow,
     (modifiers: [Super], key: "Tab"): NextWindow,
