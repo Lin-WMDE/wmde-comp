@@ -9,6 +9,7 @@ use crate::{
     },
     hooks::{Decorations, HOOKS},
     shell::{
+        ModalBehavior,
         element::{CosmicMappedKey, CosmicMappedKeyInner},
         focus::target::PointerFocusTarget,
         grabs::{GrabType, ReleaseMode, ResizeEdge},
@@ -930,6 +931,7 @@ impl CosmicStack {
                         &state.common.config,
                         &state.common.event_loop_handle,
                         false,
+                        ModalBehavior::Block,
                     );
                     if let Some((grab, focus)) = res {
                         match grab.grab_type() {
@@ -1129,6 +1131,7 @@ impl Program for CosmicStackInternal {
                                 &state.common.config,
                                 &state.common.event_loop_handle,
                                 false,
+                                ModalBehavior::Block,
                             );
                             if let Some((grab, focus)) = res {
                                 match grab.grab_type() {
@@ -1742,6 +1745,7 @@ impl PointerTarget<State> for CosmicStack {
                         },
                         state.common.config.cosmic_conf.edge_snap_threshold,
                         false,
+                        ModalBehavior::Block,
                     );
                     if let Some((grab, focus)) = res
                         && let GrabType::Pointer = grab.grab_type()
@@ -1803,6 +1807,7 @@ impl PointerTarget<State> for CosmicStack {
                         &state.common.config,
                         &state.common.event_loop_handle,
                         false,
+                        ModalBehavior::Block,
                     );
                     if let Some((grab, focus)) = res
                         && let GrabType::Pointer = grab.grab_type()
@@ -2017,6 +2022,7 @@ impl TabletToolTarget<State> for CosmicStack {
                         },
                         state.common.config.cosmic_conf.edge_snap_threshold,
                         false,
+                        ModalBehavior::Block,
                     );
                     if let Some((grab, focus)) = res
                         && let GrabType::TabletTool = grab.grab_type()

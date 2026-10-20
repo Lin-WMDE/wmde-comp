@@ -4,7 +4,13 @@ use std::{
 };
 
 use smithay::reexports::calloop;
-use zbus::names::{UniqueName, WellKnownName};
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::{
+    ContentHint, ContentPurpose,
+};
+use zbus::{
+    names::{UniqueName, WellKnownName},
+    object_server::SignalEmitter,
+};
 
 use super::name_owners::NameOwners;
 
@@ -14,6 +20,11 @@ use super::name_owners::NameOwners;
 static ALLOWED_NAMES: &[WellKnownName] = &[WellKnownName::from_static_str_unchecked(
     "org.freedesktop.impl.portal.desktop.wmde",
 )];
+
+// WMDE: the Activated/Deactivated signals exist for an on-screen keyboard. WMDE ships none, and
+// they are broadcast to the whole session with the content purpose, so any process would learn
+// when a password field takes focus. Off until an on-screen keyboard of our own listens.
+const SEND_OSK_SIGNALS: bool = false;
 
 /// Channel for handing the EI socketpair (and requested device types)
 /// It's `None` until the EI sender side has been set up
@@ -62,21 +73,69 @@ impl Ei {
 
         Ok(std::os::fd::OwnedFd::from(client_stream).into())
     }
+
+    #[zbus(signal)]
+    async fn activated(
+        ctx: SignalEmitter<'_>,
+        content_hint: u32,
+        content_purpose: u32,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn deactivated(ctx: SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
-/// Register the `fun.wmde.Comp.Ei` interface on the shared session connection.
-pub async fn init(
-    conn: &zbus::Connection,
-    name_owners: &NameOwners,
-    ei_sender: EiSender,
-) -> zbus::Result<()> {
-    let ei = Ei {
-        ei_sender,
-        name_owners: name_owners.clone(),
-    };
-    conn.object_server()
-        .at("/fun/wmde/Comp/Ei", ei)
-        .await?;
-    conn.request_name("fun.wmde.Comp").await?;
-    Ok(())
+#[derive(Debug)]
+pub struct EiState {
+    conn: zbus::Connection,
+    executor: calloop::futures::Scheduler<()>,
+}
+
+impl EiState {
+    /// Register the `fun.wmde.Comp.Ei` interface on the shared session connection.
+    pub async fn new(
+        conn: &zbus::Connection,
+        name_owners: &NameOwners,
+        ei_sender: EiSender,
+        executor: &calloop::futures::Scheduler<()>,
+    ) -> zbus::Result<Self> {
+        let ei = Ei {
+            ei_sender,
+            name_owners: name_owners.clone(),
+        };
+        conn.object_server()
+            .at("/fun/wmde/Comp/Ei", ei)
+            .await?;
+        conn.request_name("fun.wmde.Comp").await?;
+        Ok(EiState {
+            conn: conn.clone(),
+            executor: executor.clone(),
+        })
+    }
+
+    pub fn activated(&self, content_type: Option<(ContentHint, ContentPurpose)>) {
+        // WMDE: see SEND_OSK_SIGNALS.
+        if !SEND_OSK_SIGNALS {
+            return;
+        }
+        let signal_context = SignalEmitter::new(&self.conn, "/fun/wmde/Comp/Ei").unwrap();
+        let (content_hint, content_purpose) =
+            content_type.unwrap_or((ContentHint::None, ContentPurpose::Normal));
+        let future = Ei::activated(signal_context, content_hint.bits(), content_purpose.into());
+        let _ = self.executor.schedule(async {
+            let _ = future.await;
+        });
+    }
+
+    pub fn deactivated(&self) {
+        // WMDE: see SEND_OSK_SIGNALS.
+        if !SEND_OSK_SIGNALS {
+            return;
+        }
+        let signal_context = SignalEmitter::new(&self.conn, "/fun/wmde/Comp/Ei").unwrap();
+        let future = Ei::deactivated(signal_context);
+        let _ = self.executor.schedule(async {
+            let _ = future.await;
+        });
+    }
 }

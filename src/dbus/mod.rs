@@ -33,6 +33,7 @@ struct DBusStateInner {
     system_conn: zbus::Result<zbus::Connection>,
     a11y_keyboard_monitor: RefCell<Option<a11y_keyboard_monitor::A11yKeyboardMonitorState>>,
     windows: RefCell<Option<windows::WindowsState>>,
+    ei_state: RefCell<Option<ei::EiState>>,
     ei_sender: Arc<Mutex<Option<calloop::channel::Sender<crate::libei::EiRequest>>>>,
 }
 
@@ -48,6 +49,7 @@ impl DBusState {
             system_conn,
             a11y_keyboard_monitor: RefCell::new(None),
             windows: RefCell::new(None),
+            ei_state: RefCell::new(None),
             ei_sender: Arc::new(Mutex::new(None)),
         }));
         evlh.insert_source(source, |_, _, _| {}).unwrap();
@@ -76,6 +78,10 @@ impl DBusState {
         Ref::filter_map(self.0.windows.borrow(), |x| x.as_ref()).ok()
     }
 
+    pub fn ei_state(&self) -> Option<RefMut<'_, ei::EiState>> {
+        RefMut::filter_map(self.0.ei_state.borrow_mut(), |x| x.as_mut()).ok()
+    }
+
     pub fn set_ei_sender(&self, sender: calloop::channel::Sender<crate::libei::EiRequest>) {
         *self.0.ei_sender.lock().unwrap() = Some(sender);
     }
@@ -100,7 +106,14 @@ async fn init_session(state: &DBusState) -> zbus::Result<()> {
     let a11y_keyboard_monitor_state =
         A11yKeyboardMonitorState::new(conn, &name_owners, &state.0.executor).await?;
     *state.0.a11y_keyboard_monitor.borrow_mut() = Some(a11y_keyboard_monitor_state);
-    ei::init(conn, &name_owners, state.0.ei_sender.clone()).await?;
+    let ei_state = ei::EiState::new(
+        conn,
+        &name_owners,
+        state.0.ei_sender.clone(),
+        &state.0.executor,
+    )
+    .await?;
+    *state.0.ei_state.borrow_mut() = Some(ei_state);
     let windows_state = windows::WindowsState::new(conn, &name_owners, &state.0.executor).await?;
     *state.0.windows.borrow_mut() = Some(windows_state);
     Ok(())

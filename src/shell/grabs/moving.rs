@@ -5,7 +5,7 @@ use crate::{
         BackdropShader, IndicatorShader, Key, Usage, cursor::CursorState, element::AsGlowRenderer,
     },
     shell::{
-        CosmicMapped, CosmicSurface, Direction, ManagedLayer,
+        CosmicMapped, CosmicSurface, Direction, ManagedLayer, ModalBehavior,
         element::snap_strip::{REVEAL_HEIGHT, SnapStrip},
         element::{CosmicMappedRenderElement, stack_hover::StackHover},
         focus::target::{KeyboardFocusTarget, PointerFocusTarget},
@@ -1391,6 +1391,7 @@ impl Drop for MoveGrab {
                                         &window,
                                         &seat,
                                         &state.common.event_loop_handle,
+                                        ModalBehavior::Block,
                                     );
                                     if let Some(geo) = pre_drag_geometry
                                         && let Some(state) =
