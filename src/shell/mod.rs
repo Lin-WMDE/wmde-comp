@@ -295,6 +295,8 @@ pub struct Shell {
     // WMDE: the open window switcher, see `shell::switcher`. `alt_tab` above serves its
     // `None` style, which keeps the switcher off the screen.
     pub switcher: Option<switcher::Session>,
+    /// WMDE: a finished switcher session whose closing animation still runs.
+    pub switcher_closing: Option<switcher::Session>,
     pub xwayland_keyboard_grab: Option<XWaylandKeyboardGrab<State>>,
 
     theme: cosmic::Theme,
@@ -1774,6 +1776,7 @@ impl Shell {
             previous_workspace_idx: None,
             alt_tab: None,
             switcher: None,
+            switcher_closing: None,
             xwayland_keyboard_grab: None,
 
             theme,
@@ -2531,6 +2534,8 @@ impl Shell {
                     .get::<crate::backend::render::cursor::CursorState>()
                     .is_some_and(|state| state.lock().unwrap().is_magnifying())
             })
+            // WMDE: the window switcher opening and closing.
+            || self.switcher_animating()
             // WMDE: the restore of a window dragged out of a snap runs with the pointer still.
             || self.seats.iter().any(|seat| {
                 seat.user_data()

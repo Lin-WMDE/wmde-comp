@@ -135,13 +135,14 @@ impl SwitcherCell {
         renderer: &mut R,
         location: Point<i32, Physical>,
         scale: Scale<f64>,
+        alpha: f32,
         push: &mut dyn FnMut(IcedRenderElement<R>),
     ) where
         R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
         self.elem
-            .push_render_elements(renderer, location, scale, 1.0, [0; 4], push, None);
+            .push_render_elements(renderer, location, scale, alpha, [0; 4], push, None);
     }
 }
 
@@ -230,12 +231,14 @@ impl Program for CellProgram {
     }
 }
 
-/// The picture of `target` fitted into `thumb` (output-local), top-first through `push`.
+/// The picture of `target` fitted into `thumb` (output-local), top-first through `push`. At its
+/// own geometry it draws exactly where the window does, which the animation starts from.
 pub fn push_thumbnail<R>(
     renderer: &mut R,
     target: &FocusTarget,
     thumb: Rectangle<i32, Logical>,
     scale: f64,
+    alpha: f32,
     push: &mut dyn FnMut(SwitcherElement<R>),
 ) where
     R: AsGlowRenderer + ImportAll + ImportMem,
@@ -283,7 +286,7 @@ pub fn push_thumbnail<R>(
                 location,
                 None,
                 Scale::from(scale),
-                1.0,
+                alpha,
                 None,
                 None,
                 &mut |elem| upper.extend(fit(elem)),
@@ -302,7 +305,7 @@ pub fn push_thumbnail<R>(
                 renderer,
                 location,
                 Scale::from(scale),
-                1.0,
+                alpha,
                 None,
                 None,
                 false,
@@ -332,11 +335,12 @@ pub fn push_thumbnail<R>(
     }
 }
 
-/// The shade over the desktop, under the thumbnails.
+/// The shade over the desktop, under the thumbnails, `strength` of it while it fades.
 pub fn push_dim<R>(
     renderer: &mut R,
     key: smithay::backend::renderer::element::Id,
     output_size: Size<i32, Logical>,
+    strength: f32,
     push: &mut dyn FnMut(SwitcherElement<R>),
 ) where
     R: AsGlowRenderer,
@@ -347,7 +351,7 @@ pub fn push_dim<R>(
         key,
         Rectangle::from_size(output_size).as_local(),
         0.,
-        DIM,
+        DIM * strength,
         [0.0, 0.0, 0.0],
     );
     push(SwitcherElement::Workspace(WorkspaceRenderElement::Window(

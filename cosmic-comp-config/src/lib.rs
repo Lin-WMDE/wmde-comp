@@ -198,6 +198,8 @@ pub struct WindowSwitcherConfig {
     pub include_minimized: bool,
     /// Blur the desktop behind the thumbnails instead of only dimming it.
     pub blur_background: bool,
+    /// Windows shrink into their thumbnails on opening and go back on closing.
+    pub animate: bool,
 }
 
 impl Default for WindowSwitcherConfig {
@@ -206,6 +208,7 @@ impl Default for WindowSwitcherConfig {
             style: WindowSwitcherStyle::Grid,
             include_minimized: true,
             blur_background: true,
+            animate: true,
         }
     }
 }

@@ -15,6 +15,10 @@
 //! and dimmed desktop - wallpaper and desktop icons, without windows, panels or overlays (see
 //! `Stage::Switcher` in `shell::focus::order`).
 //!
+//! With `animate`, opening moves every window from its place on screen into its thumbnail
+//! (minimized ones fade in), and closing moves them back, the picked one on top. Picking a
+//! minimized window skips the closing half: the window has its own restore animation.
+//!
 //! The `None` style keeps the switcher off the screen: each press focuses the next window right
 //! away (`Shell::cycle_window`).
 
@@ -28,7 +32,7 @@ use std::{
         Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use calloop::{
@@ -37,6 +41,7 @@ use calloop::{
 };
 use cosmic_comp_config::WindowSwitcherStyle;
 use cosmic_settings_config::shortcuts;
+use keyframe::{ease, functions::EaseInOutCubic};
 use smithay::{
     backend::{
         input::{InputTime, KeyState},
@@ -53,7 +58,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point, SERIAL_COUNTER, Size},
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size},
     wayland::seat::WaylandFocus,
 };
 
@@ -66,7 +71,7 @@ use crate::{
         workspace::MinimizedWindow,
     },
     state::State,
-    utils::prelude::*,
+    utils::{prelude::*, tween::EaseRectangle},
     wayland::protocols::toplevel_management::ToplevelManagementHandler,
 };
 
@@ -80,6 +85,9 @@ use self::{
 /// How long the opening press has to be held before the switcher shows. A quicker Alt+Tab
 /// switches to the previous window with nothing flashing on screen, as in Windows.
 const SHOW_DELAY: Duration = Duration::from_millis(100);
+/// Windows into their thumbnails, and back.
+const OPEN_DURATION: Duration = Duration::from_millis(200);
+const CLOSE_DURATION: Duration = Duration::from_millis(150);
 
 /// Tells sessions apart in callbacks that outlive one: the show timer, the pointer grab.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -114,8 +122,15 @@ pub struct Session {
     visible: bool,
     timer: Option<RegistrationToken>,
     blur_background: bool,
+    animate: bool,
     /// Built when the switcher shows, rebuilt when a listed window goes away.
     view: Option<View>,
+    /// Where each entry's window is on screen, output-local; `None` for a minimized one. The
+    /// animation starts and ends there.
+    origins: Vec<Option<Rectangle<i32, Logical>>>,
+    opened: Option<Instant>,
+    /// Set once the session ended and only its closing animation runs, with the picked entry.
+    closing: Option<(Instant, Option<usize>)>,
     blur: Mutex<BlurState>,
     dim: Id,
 }
@@ -151,6 +166,37 @@ fn size_of(target: &FocusTarget) -> Size<i32, Logical> {
         FocusTarget::Window(mapped) => mapped.geometry().size,
         FocusTarget::Fullscreen(surface) => SpaceElement::geometry(surface).size,
     }
+}
+
+/// Where the window of `target` is on `output`, output-local, if it is on screen at all.
+fn origin_of(
+    shell: &Shell,
+    output: &Output,
+    target: &FocusTarget,
+) -> Option<Rectangle<i32, Logical>> {
+    if target.is_minimized() {
+        return None;
+    }
+    let set = shell.workspaces.sets.get(output)?;
+    match target {
+        FocusTarget::Fullscreen(_) => {
+            Some(Rectangle::from_size(output.geometry().size.as_logical()))
+        }
+        FocusTarget::Window(mapped) => set
+            .sticky_layer
+            .element_geometry(mapped)
+            .or_else(|| set.workspaces[set.active].element_geometry(mapped))
+            .map(|geo| geo.as_logical()),
+    }
+}
+
+/// `rect` scaled by `factor` about its centre.
+fn shrunk(rect: Rectangle<i32, Logical>, factor: f64) -> Rectangle<i32, Logical> {
+    let size = rect.size.to_f64().upscale(factor).to_i32_round();
+    Rectangle::new(
+        rect.loc + Point::from(((rect.size.w - size.w) / 2, (rect.size.h - size.h) / 2)),
+        size,
+    )
 }
 
 fn add(entries: &mut Vec<FocusTarget>, target: FocusTarget) {
@@ -215,6 +261,24 @@ impl Session {
         self.visible && &self.output == output
     }
 
+    /// How open the switcher looks, 0 to 1: rising while it opens, falling while it closes.
+    fn openness(&self) -> f64 {
+        if let Some((closed, _)) = self.closing {
+            return 1.0 - (closed.elapsed().as_secs_f64() / CLOSE_DURATION.as_secs_f64()).min(1.0);
+        }
+        match self.opened {
+            Some(opened) if self.animate => {
+                (opened.elapsed().as_secs_f64() / OPEN_DURATION.as_secs_f64()).min(1.0)
+            }
+            _ => 1.0,
+        }
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.closing.is_some()
+            || (self.animate && self.opened.is_some_and(|o| o.elapsed() < OPEN_DURATION))
+    }
+
     fn build_view(&mut self, evlh: LoopHandle<'static, State>, theme: cosmic::Theme) {
         let area = self.output.geometry().size.as_logical();
         let aspects = self
@@ -272,26 +336,62 @@ impl Session {
             return;
         };
         let area = self.output.geometry().size.as_logical();
-        let cells = view.layout.cells.iter().zip(&view.cells).zip(&self.entries);
+        let open = self.openness();
+        let eased: f64 = ease(EaseInOutCubic, 0.0, 1.0, open);
+        // Titles and frames come in over the second half and go over the first.
+        let chrome = ((open - 0.5) * 2.0).clamp(0.0, 1.0) as f32;
 
-        for ((cell, elem), target) in cells.clone() {
+        if chrome > 0.0 {
+            for ((cell, elem), target) in
+                view.layout.cells.iter().zip(&view.cells).zip(&self.entries)
+            {
+                if !target.alive() {
+                    continue;
+                }
+                elem.set_title(&surface_of(target).title());
+                elem.push_render_elements(
+                    renderer,
+                    cell.frame.loc.to_physical_precise_round(scale),
+                    scale.into(),
+                    chrome,
+                    &mut |e| push(SwitcherElement::Iced(e)),
+                );
+            }
+        }
+
+        // Top-first: the most recent window on top, as on screen; closing, the picked one.
+        let mut order = (0..self.entries.len()).collect::<Vec<_>>();
+        if let Some((_, Some(pick))) = self.closing
+            && pick < order.len()
+        {
+            order.remove(pick);
+            order.insert(0, pick);
+        }
+        for i in order {
+            let (Some(cell), Some(target)) = (view.layout.cells.get(i), self.entries.get(i)) else {
+                continue;
+            };
             if !target.alive() {
                 continue;
             }
-            elem.set_title(&surface_of(target).title());
-            elem.push_render_elements(
-                renderer,
-                cell.frame.loc.to_physical_precise_round(scale),
-                scale.into(),
-                &mut |e| push(SwitcherElement::Iced(e)),
-            );
+            let (rect, alpha) = match self.origins.get(i).copied().flatten() {
+                Some(origin) if open < 1.0 => (
+                    ease(
+                        EaseInOutCubic,
+                        EaseRectangle(origin),
+                        EaseRectangle(cell.thumb),
+                        open,
+                    )
+                    .unwrap(),
+                    1.0,
+                ),
+                // Not on screen: grows out of its cell while it fades in.
+                None if open < 1.0 => (shrunk(cell.thumb, 0.8 + 0.2 * eased), eased as f32),
+                _ => (cell.thumb, 1.0),
+            };
+            element::push_thumbnail(renderer, target, rect, scale, alpha, push);
         }
-        for ((cell, _), target) in cells {
-            if target.alive() {
-                element::push_thumbnail(renderer, target, cell.thumb, scale, push);
-            }
-        }
-        element::push_dim(renderer, self.dim.clone(), area, push);
+        element::push_dim(renderer, self.dim.clone(), area, eased as f32, push);
         if self.blur_background {
             element::push_blur(renderer, &mut self.blur.lock().unwrap(), area, scale, push);
         }
@@ -299,15 +399,32 @@ impl Session {
 }
 
 impl Shell {
-    /// The switcher to draw on `output` instead of its windows, if one shows there.
+    /// The switcher to draw on `output` instead of its windows, if one shows there: the open
+    /// one, or one whose closing animation still runs.
     pub fn switcher_on(&self, output: &Output) -> Option<&Session> {
-        self.switcher.as_ref().filter(|s| s.is_visible_on(output))
+        self.switcher
+            .as_ref()
+            .filter(|s| s.is_visible_on(output))
+            .or_else(|| {
+                self.switcher_closing
+                    .as_ref()
+                    .filter(|s| &s.output == output)
+            })
+    }
+
+    /// Whether a switcher animation needs frames.
+    pub fn switcher_animating(&self) -> bool {
+        self.switcher.as_ref().is_some_and(Session::is_animating) || self.switcher_closing.is_some()
     }
 
     /// The output to redraw when `surface` commits: the switcher's, while it shows `surface`.
     /// A minimized window is visible nowhere else, so nothing else would redraw its thumbnail.
     pub fn switcher_output_for_surface(&self, surface: &WlSurface) -> Option<&Output> {
-        let session = self.switcher.as_ref().filter(|s| s.visible)?;
+        let session = self
+            .switcher
+            .as_ref()
+            .filter(|s| s.visible)
+            .or(self.switcher_closing.as_ref())?;
         session
             .entries
             .iter()
@@ -372,6 +489,10 @@ impl State {
             self.switcher_op(SwitcherOp::Step { forward }, seat);
             return;
         }
+        // A closing animation still running gives way to the new session at once.
+        if let Some(closing) = self.common.shell.write().switcher_closing.take() {
+            self.backend.schedule_render(&closing.output);
+        }
 
         let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         let hold = layout::hold_modifiers(&pattern.modifiers);
@@ -420,7 +541,11 @@ impl State {
                 visible: false,
                 timer,
                 blur_background: config.blur_background,
+                animate: config.animate,
                 view: None,
+                origins: Vec::new(),
+                opened: None,
+                closing: None,
                 blur: Mutex::new(BlurState::default()),
                 dim: Id::new(),
             });
@@ -450,18 +575,21 @@ impl State {
         let evlh = self.common.event_loop_handle.clone();
         let theme = self.common.theme.clone();
         let mut shell = self.common.shell.write();
-        let Some(session) = shell
-            .switcher
-            .as_mut()
-            .filter(|s| s.generation == generation)
-        else {
+        let origins = match shell.switcher.as_ref() {
+            Some(s) if s.generation == generation && !s.visible => s
+                .entries
+                .iter()
+                .map(|t| origin_of(&shell, &s.output, t))
+                .collect::<Vec<_>>(),
+            _ => return,
+        };
+        let Some(session) = shell.switcher.as_mut() else {
             return;
         };
         session.timer = None;
-        if session.visible {
-            return;
-        }
         session.visible = true;
+        session.origins = origins;
+        session.opened = Some(Instant::now());
         session.build_view(evlh, theme);
         let output = session.output.clone();
         std::mem::drop(shell);
@@ -508,7 +636,7 @@ impl State {
 
     /// Closes the switcher and switches to entry `pick`, or to nothing.
     fn switcher_finish(&mut self, pick: Option<usize>) {
-        let Some(session) = self.common.shell.write().switcher.take() else {
+        let Some(mut session) = self.common.shell.write().switcher.take() else {
             return;
         };
         if let Some(timer) = session.timer {
@@ -523,18 +651,56 @@ impl State {
             self.backend.schedule_render(&session.output);
         }
 
-        if let Some(target) = pick.and_then(|i| session.entries.get(i))
+        // Checked before the switch: a picked minimized window is restored by it and plays its
+        // own animation from the panel, which the closing one would hide.
+        let picked_minimized = pick
+            .and_then(|i| session.entries.get(i))
+            .is_some_and(|t| t.is_minimized());
+        if session.visible && session.animate && !picked_minimized {
+            let generation = session.generation;
+            session.closing = Some((Instant::now(), pick));
+            let _ = self.common.event_loop_handle.insert_source(
+                Timer::from_duration(CLOSE_DURATION + Duration::from_millis(16)),
+                move |_, _, state| {
+                    state.switcher_closed(generation);
+                    TimeoutAction::Drop
+                },
+            );
+            let output = session.output.clone();
+            let seat = session.seat.clone();
+            let target = pick.and_then(|i| session.entries.get(i)).cloned();
+            self.common.shell.write().switcher_closing = Some(session);
+            self.backend.schedule_render(&output);
+            self.switcher_activate(target.as_ref(), Some(seat));
+            return;
+        }
+
+        let seat = session.seat.clone();
+        self.switcher_activate(pick.and_then(|i| session.entries.get(i)), Some(seat));
+    }
+
+    /// Ends a closing animation, so the windows draw themselves again.
+    fn switcher_closed(&mut self, generation: u64) {
+        let mut shell = self.common.shell.write();
+        if shell
+            .switcher_closing
+            .as_ref()
+            .is_some_and(|s| s.generation == generation)
+            && let Some(session) = shell.switcher_closing.take()
+        {
+            std::mem::drop(shell);
+            self.backend.schedule_render(&session.output);
+        }
+    }
+
+    fn switcher_activate(&mut self, target: Option<&FocusTarget>, seat: Option<Seat<State>>) {
+        if let Some(target) = target
             && target.alive()
         {
             // The same path as a click on the panel: restores a minimized window, switches
             // its workspace if need be, raises and focuses it.
             let dh = self.common.display_handle.clone();
-            ToplevelManagementHandler::activate(
-                self,
-                &dh,
-                &surface_of(target),
-                Some(session.seat.clone()),
-            );
+            ToplevelManagementHandler::activate(self, &dh, &surface_of(target), seat);
         }
     }
 
@@ -592,6 +758,13 @@ impl State {
                 return;
             }
             let selected = session.entries.get(session.selected).cloned();
+            let alive = session
+                .entries
+                .iter()
+                .map(|t| t.alive())
+                .collect::<Vec<_>>();
+            let mut keep = alive.iter();
+            session.origins.retain(|_| *keep.next().unwrap_or(&true));
             session.entries.retain(|t| t.alive());
             if session.entries.is_empty() {
                 std::mem::drop(shell);
