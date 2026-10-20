@@ -239,6 +239,30 @@ pub fn cell_at(layout: &GridLayout, point: Point<f64, Logical>) -> Option<usize>
     })
 }
 
+/// The close button of a cell: a square as tall as the header, at its right end, so the
+/// title is never drawn under it.
+pub fn close_button(cell: &Cell) -> Rectangle<i32, Logical> {
+    let side = cell.header.size.h.min(cell.header.size.w);
+    Rectangle::new(
+        Point::from((
+            cell.header.loc.x + cell.header.size.w - side,
+            cell.header.loc.y,
+        )),
+        Size::from((side, side)),
+    )
+}
+
+/// The cell whose close button holds `point`, output-local, half-open like [`cell_at`].
+pub fn close_at(layout: &GridLayout, point: Point<f64, Logical>) -> Option<usize> {
+    layout.cells.iter().position(|c| {
+        let b = close_button(c).to_f64();
+        point.x >= b.loc.x
+            && point.y >= b.loc.y
+            && point.x < b.loc.x + b.size.w
+            && point.y < b.loc.y + b.size.h
+    })
+}
+
 /// What has to stay held for the switcher to stay open: the binding's modifiers less Shift,
 /// which only reverses the direction. A Shift-only binding holds Shift; a binding without
 /// modifiers holds nothing, and the switcher stays open until Enter, a click or Esc.
@@ -433,6 +457,20 @@ mod tests {
         let outside = Point::from(((f.loc.x + f.size.w) as f64, f.loc.y as f64));
         assert_ne!(cell_at(&l, outside), Some(1));
         assert_eq!(cell_at(&l, Point::from((0.0, 0.0))), None);
+    }
+
+    #[test]
+    fn close_button_sits_at_the_right_of_the_header() {
+        let (_, l) = layout(3);
+        for (i, cell) in l.cells.iter().enumerate() {
+            let b = close_button(cell);
+            assert_eq!(b.size.h, cell.header.size.h);
+            assert_eq!(b.loc.x + b.size.w, cell.header.loc.x + cell.header.size.w);
+            assert!(cell.frame.contains_rect(b));
+            assert_eq!(close_at(&l, b.loc.to_f64()), Some(i));
+            // The thumbnail under the header is not the button.
+            assert_eq!(close_at(&l, cell.thumb.loc.to_f64()), None);
+        }
     }
 
     #[test]

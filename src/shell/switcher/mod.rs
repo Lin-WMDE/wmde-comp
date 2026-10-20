@@ -10,6 +10,9 @@
 //! it was minimized. A binding without modifiers opens a session that stays until Enter, a
 //! click or Esc.
 //!
+//! Delete, or the close button the selected thumbnail carries, closes that window and leaves the
+//! switcher open.
+//!
 //! The switcher shows only after [`SHOW_DELAY`]: a quick Alt+Tab switches to the previous
 //! window without drawing anything. On screen it is a grid of live thumbnails over the blurred
 //! and dimmed desktop - wallpaper and desktop icons, without windows, panels or overlays (see
@@ -94,11 +97,15 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwitcherOp {
-    Step { forward: bool },
+    Step {
+        forward: bool,
+    },
     Move(Dir),
     Hover(usize),
     Commit(Option<usize>),
     Cancel,
+    /// Close the window of an entry, the selected one with `None`; the switcher stays open.
+    Close(Option<usize>),
 }
 
 /// What an open switcher does with a key, decided before the global shortcuts see it.
@@ -625,6 +632,14 @@ impl State {
                     self.switcher_finish(None);
                     return;
                 }
+                // The entry goes once the window is gone (`switcher_prune`); a window that asks
+                // first - unsaved changes - stays, and its dialog shows after the switcher.
+                SwitcherOp::Close(index) => {
+                    if let Some(target) = session.entries.get(index.unwrap_or(session.selected)) {
+                        surface_of(target).close();
+                    }
+                    return;
+                }
             };
             session.select(index);
             session.visible.then(|| session.output.clone())
@@ -733,6 +748,17 @@ impl State {
         }
     }
 
+    /// The cell whose close button is under `location` (global), for the pointer grab.
+    fn switcher_close_at(&self, generation: u64, location: Point<f64, Logical>) -> Option<usize> {
+        let shell = self.common.shell.read();
+        let session = shell
+            .switcher
+            .as_ref()
+            .filter(|s| s.generation == generation && s.visible)?;
+        let local = location - session.output.geometry().loc.as_logical().to_f64();
+        layout::close_at(&session.view.as_ref()?.layout, local)
+    }
+
     /// The cell under `location` (global), for the pointer grab.
     fn switcher_cell_at(&self, generation: u64, location: Point<f64, Logical>) -> Option<usize> {
         let shell = self.common.shell.read();
@@ -825,6 +851,7 @@ pub fn filter_key(
     let op = match sym {
         Keysym::Escape => SwitcherOp::Cancel,
         Keysym::Return | Keysym::KP_Enter => SwitcherOp::Commit(None),
+        Keysym::Delete | Keysym::KP_Delete => SwitcherOp::Close(None),
         Keysym::Left | Keysym::KP_Left => SwitcherOp::Move(Dir::Left),
         Keysym::Right | Keysym::KP_Right => SwitcherOp::Move(Dir::Right),
         Keysym::Up | Keysym::KP_Up => SwitcherOp::Move(Dir::Up),

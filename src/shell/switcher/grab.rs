@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! WMDE: the pointer while the window switcher is open. Hovering a thumbnail moves the
-//! selection to it, a press on one switches to it, a press anywhere else closes the switcher.
+//! selection to it, a press on one switches to it, a press on its close button closes that
+//! window, a press anywhere else closes the switcher.
 //! No client gets pointer focus meanwhile.
 //!
 //! Pointer only, unlike the grabs `check_grab_preconditions` places by serial: the switcher is
@@ -72,6 +73,12 @@ impl PointerGrab<State> for SwitcherGrab {
     ) {
         if event.state != ButtonState::Pressed {
             handle.button(state, event);
+            return;
+        }
+        // The close button closes that window and keeps the switcher open.
+        if let Some(index) = state.switcher_close_at(self.generation, handle.current_location()) {
+            let seat = state.common.shell.read().seats.last_active().clone();
+            state.switcher_op(SwitcherOp::Close(Some(index)), &seat);
             return;
         }
         let pick = state.switcher_cell_at(self.generation, handle.current_location());

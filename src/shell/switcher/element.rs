@@ -53,6 +53,8 @@ use smithay::{
 const FRAME: f32 = 2.0;
 /// Between the icon and the title.
 const ICON_GAP: f32 = 8.0;
+/// The close glyph, centred in a header-high square.
+const CLOSE_ICON: u16 = 16;
 /// How dark the desktop behind the thumbnails gets, over the blur: white titles have to stay
 /// readable on a light wallpaper.
 pub const DIM: f32 = 0.3;
@@ -183,6 +185,24 @@ impl Program for CellProgram {
         let mut icon = from_name(self.app_id.clone()).size(HEADER as u16);
         icon.fallback = Some(IconFallback::Names(vec!["application-x-executable".into()]));
 
+        // The selected window's close button. Its place is kept on every cell, so the title
+        // keeps its width when the selection moves. Hit testing is `layout::close_button`.
+        let close: cosmic::Element<'_, Message> = if self.selected {
+            from_name("window-close-symbolic")
+                .size(CLOSE_ICON)
+                .prefer_svg(true)
+                .icon()
+                .apply(container)
+                .center(Length::Fixed(HEADER as f32))
+                .class(theme::Container::custom(|_theme| container::Style {
+                    icon_color: Some(Color::WHITE),
+                    ..Default::default()
+                }))
+                .into()
+        } else {
+            space::horizontal().width(HEADER as f32).into()
+        };
+
         let header = row(vec![
             icon.icon().into(),
             space::horizontal().width(ICON_GAP).into(),
@@ -194,6 +214,7 @@ impl Program for CellProgram {
                 .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
                 .width(Length::Fill)
                 .into(),
+            close,
         ])
         .align_y(Alignment::Center)
         .height(Length::Fixed(HEADER as f32));
