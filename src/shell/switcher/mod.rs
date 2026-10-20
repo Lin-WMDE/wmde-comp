@@ -57,7 +57,7 @@ use smithay::{
     input::{
         Seat,
         keyboard::{Keysym, ModifiersState},
-        pointer::Focus,
+        pointer::{Focus, GrabStartData},
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -68,9 +68,8 @@ use smithay::{
 use crate::{
     backend::render::{element::AsGlowRenderer, wayland::blur_effect::BlurState},
     shell::{
-        CosmicMappedRenderElement, CosmicSurface, SeatExt, Shell, check_grab_preconditions,
+        CosmicMappedRenderElement, CosmicSurface, SeatExt, Shell,
         focus::{FocusTarget, target::KeyboardFocusTarget},
-        grabs::GrabStartData,
         workspace::MinimizedWindow,
     },
     state::State,
@@ -564,11 +563,15 @@ impl State {
 
         // Clicks pick a thumbnail and never reach a window. A pointer already grabbed - a
         // window being dragged - keeps its grab, and the switcher works from the keyboard.
+        // The start data names no surface: smithay unsets a grab whose start focus dies, and
+        // the window under the pointer may be the very one closed from the switcher.
         let pointer = seat.get_pointer().unwrap();
-        if !pointer.is_grabbed()
-            && let Some(GrabStartData::Pointer(start_data)) =
-                check_grab_preconditions(seat, None, None)
-        {
+        if !pointer.is_grabbed() {
+            let start_data = GrabStartData {
+                focus: None,
+                button: 0x110,
+                location: pointer.current_location(),
+            };
             pointer.set_grab(
                 self,
                 SwitcherGrab::new(start_data, generation),
