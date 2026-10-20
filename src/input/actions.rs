@@ -112,6 +112,9 @@ impl State {
                 }
             }
 
+            // WMDE: keys of the open window switcher, decided in `shell::switcher::filter_key`.
+            Action::Private(PrivateAction::Switcher(op)) => self.switcher_op(op, seat),
+
             Action::Private(PrivateAction::Resizing(direction, edge, state)) => {
                 if state == shortcuts::State::Pressed {
                     self.common
@@ -824,19 +827,11 @@ impl State {
                 }
             }
 
-            Action::NextWindow => {
-                let target = self.common.shell.write().cycle_window(true, seat);
-                if let Some(target) = target {
-                    Shell::set_focus(self, Some(&target), seat, None, true);
-                }
-            }
+            // WMDE: the window switcher, see `shell::switcher`; its `None` style is the plain
+            // focus cycle these two ran before.
+            Action::NextWindow => self.switcher_next(true, seat, &pattern),
 
-            Action::PrevWindow => {
-                let target = self.common.shell.write().cycle_window(false, seat);
-                if let Some(target) = target {
-                    Shell::set_focus(self, Some(&target), seat, None, true);
-                }
-            }
+            Action::PrevWindow => self.switcher_next(false, seat, &pattern),
 
             Action::Move(direction) => {
                 let res = self

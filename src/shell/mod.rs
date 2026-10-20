@@ -101,6 +101,8 @@ pub mod focus;
 pub mod grabs;
 pub mod layout;
 mod seats;
+// WMDE: the Alt+Tab window switcher.
+pub mod switcher;
 mod workspace;
 pub mod zoom;
 pub use self::element::{CosmicMapped, CosmicMappedRenderElement, CosmicSurface};
@@ -290,6 +292,9 @@ pub struct Shell {
     // duration of a modifier hold. Built on the first Tab, walked by locating the
     // current focus within it, and cleared when the base modifier (Alt/Super) releases.
     pub alt_tab: Option<Vec<FocusTarget>>,
+    // WMDE: the open window switcher, see `shell::switcher`. `alt_tab` above serves its
+    // `None` style, which keeps the switcher off the screen.
+    pub switcher: Option<switcher::Session>,
     pub xwayland_keyboard_grab: Option<XWaylandKeyboardGrab<State>>,
 
     theme: cosmic::Theme,
@@ -1588,6 +1593,11 @@ impl Common {
     pub fn remove_output(&mut self, output: &Output) {
         let mut shell = self.shell.write();
         let shell_ref = &mut *shell;
+        // WMDE: a switcher open on the output that goes away goes with it.
+        if let Some(generation) = shell_ref.switcher_generation_on(output) {
+            self.event_loop_handle
+                .insert_idle(move |state| state.switcher_cancel(Some(generation)));
+        }
         shell_ref.workspaces.remove_output(
             output,
             shell_ref.seats.iter(),
@@ -1637,6 +1647,11 @@ impl Common {
             &self.xdg_activation_state,
             &mut self.workspace_state.update(),
         );
+        // WMDE: a window listed in the open switcher went away: rebuild its grid.
+        if self.shell.read().switcher_needs_prune() {
+            self.event_loop_handle
+                .insert_idle(|state| state.switcher_prune());
+        }
         self.popups.cleanup();
         self.toplevel_info_state.refresh(&self.workspace_state);
         self.refresh_idle_inhibit();
@@ -1758,6 +1773,7 @@ impl Shell {
             session_lock: None,
             previous_workspace_idx: None,
             alt_tab: None,
+            switcher: None,
             xwayland_keyboard_grab: None,
 
             theme,

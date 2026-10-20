@@ -27,6 +27,8 @@ use crate::{
 
 pub enum Stage<'a> {
     ZoomUI,
+    // WMDE: the open window switcher, see `shell::switcher`.
+    Switcher(&'a crate::shell::switcher::Session),
     SessionLock(Option<&'a LockSurface>),
     LayerPopup {
         layer: LayerSurface,
@@ -186,6 +188,29 @@ fn render_input_order_internal<R: 'static>(
         .is_some_and(|state| state.show_overlay && state.current_level(output) != 1.0)
     {
         callback(Stage::ZoomUI)?;
+    }
+
+    // WMDE: the window switcher owns the output it shows on. Under it only the desktop: the
+    // Bottom layer (desktop icons) and the wallpaper, without windows, panels, overlays and
+    // popups, and regardless of a fullscreen window, which otherwise hides the wallpaper.
+    // Below the lock check on purpose: under a lock it is neither drawn nor hit.
+    if let Some(switcher) = shell.switcher_on(output) {
+        callback(Stage::Switcher(switcher))?;
+        for (layer, location) in layer_surfaces(output, Layer::Bottom, element_filter) {
+            callback(Stage::LayerSurface {
+                layer,
+                location,
+                workspace_idx: current.1,
+            })?;
+        }
+        for (layer, location) in layer_surfaces(output, Layer::Background, element_filter) {
+            callback(Stage::LayerSurface {
+                layer,
+                location,
+                workspace_idx: current.1,
+            })?;
+        }
+        return ControlFlow::Continue(());
     }
 
     // Overlay-level layer shell

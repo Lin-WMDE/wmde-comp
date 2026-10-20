@@ -1054,6 +1054,14 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 let new = get_config::<bool>(&config, "cursor_shake_to_find");
                 state.common.config.cosmic_conf.cursor_shake_to_find = new;
             }
+            // WMDE: read when the switcher opens, so a change applies from the next opening.
+            "window_switcher" => {
+                let new = get_config::<cosmic_comp_config::WindowSwitcherConfig>(
+                    &config,
+                    "window_switcher",
+                );
+                state.common.config.cosmic_conf.window_switcher = new;
+            }
             "cursor_hide" => {
                 let new = get_config::<CursorHideConfig>(&config, "cursor_hide");
                 if new != state.common.config.cosmic_conf.cursor_hide {

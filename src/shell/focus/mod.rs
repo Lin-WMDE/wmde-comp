@@ -105,7 +105,8 @@ impl FocusTarget {
         }
     }
 
-    fn is_minimized(&self) -> bool {
+    // WMDE: public for the window switcher, which lists minimized windows last.
+    pub fn is_minimized(&self) -> bool {
         match self {
             FocusTarget::Window(mapped) => mapped.is_minimized(),
             FocusTarget::Fullscreen(surface) => surface.is_minimized(),
@@ -135,6 +136,15 @@ impl FocusStack<'_> {
         self.0
             .iter()
             .flat_map(|set| set.iter().rev().filter(|w| w.alive() && !w.is_minimized()))
+    }
+
+    /// WMDE: most recent first like `iter`, minimized windows included. Minimizing leaves a
+    /// window in the stack (`append_focus_stack` only refuses to add one); the window switcher
+    /// lists them.
+    pub fn iter_with_minimized(&self) -> impl Iterator<Item = &'_ FocusTarget> {
+        self.0
+            .iter()
+            .flat_map(|set| set.iter().rev().filter(|w| w.alive()))
     }
 }
 

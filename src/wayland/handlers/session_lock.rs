@@ -40,6 +40,10 @@ use std::collections::HashMap;
 /// computed, which predates the lock - so the recomputation below has to see the lock to send
 /// the pointer anywhere but back onto that window.
 pub fn cancel_grabs(state: &mut State) {
+    // WMDE: the window switcher closes without switching; it is not drawn under a lock, and
+    // letting go of Alt there must not switch windows behind the lock.
+    state.switcher_cancel(None);
+
     let seats = state
         .common
         .shell

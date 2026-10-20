@@ -1063,6 +1063,12 @@ impl Common {
             })
         }
 
+        // WMDE: minimized windows the window switcher shows; the minimized sticky ones are in
+        // none of the lists above.
+        for window in shell.switcher_minimized_on(output) {
+            window.with_surfaces(processor(None));
+        }
+
         // OR windows
         shell.override_redirect_windows.iter().for_each(|or| {
             if let Some(wl_surface) = or.wl_surface() {
@@ -1464,6 +1470,13 @@ impl Common {
                     }
                 })
             }
+        }
+
+        // WMDE: a minimized window gets only the throttled frame above, but while the window
+        // switcher shows its thumbnail it is on screen and gets the output's rate.
+        for window in shell.switcher_minimized_on(output) {
+            let throttle = throttle(&window, window.x11_surface().is_some());
+            window.send_frame(output, time, throttle, should_send);
         }
 
         shell.override_redirect_windows.iter().for_each(|or| {

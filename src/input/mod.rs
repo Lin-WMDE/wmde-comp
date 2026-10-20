@@ -2739,6 +2739,51 @@ impl State {
             return FilterResult::Intercept(None);
         }
 
+        // WMDE: an open window switcher decides every key before the global shortcuts do: its
+        // binding key steps instead of opening another, Esc, Enter and the arrows are its own,
+        // and nothing else reaches the client but modifiers. See `shell::switcher::filter_key`.
+        if let Some(decision) = crate::shell::switcher::filter_key(
+            self,
+            seat,
+            modifiers,
+            handle.modified_sym(),
+            key_state,
+            &key_matches,
+        ) {
+            use crate::shell::switcher::SwitcherKey;
+            return match decision {
+                SwitcherKey::Forward => FilterResult::Forward,
+                // `key: None` makes `process_keyboard_filter` forward the release, so the
+                // client does not keep seeing the modifier held.
+                SwitcherKey::Release(op) => FilterResult::Intercept(Some((
+                    Action::Private(PrivateAction::Switcher(op)),
+                    shortcuts::Binding {
+                        modifiers: shortcuts::Modifiers::default(),
+                        keycode: None,
+                        key: None,
+                        description: None,
+                    },
+                ))),
+                SwitcherKey::Press(op) => {
+                    // A modifier-only binding queued by the opening press (Super for the
+                    // Start menu) must not fire when that modifier is let go.
+                    seat.modifiers_shortcut_queue().clear(backend_id);
+                    seat.supressed_keys().add(backend_id, &handle, None);
+                    FilterResult::Intercept(op.map(|op| {
+                        (
+                            Action::Private(PrivateAction::Switcher(op)),
+                            shortcuts::Binding {
+                                modifiers: shortcuts::Modifiers::default(),
+                                keycode: None,
+                                key: Some(handle.modified_sym()),
+                                description: None,
+                            },
+                        )
+                    }))
+                }
+            };
+        }
+
         // handle the rest of the global shortcuts
         let mut clear_queue = true;
         if !shortcuts_inhibited {
@@ -2958,6 +3003,8 @@ impl State {
             |stage| {
                 match stage {
                     Stage::ZoomUI => {}
+                    // WMDE: nothing under the window switcher takes keyboard focus.
+                    Stage::Switcher(_) => return ControlFlow::Break(Ok(None)),
                     Stage::SessionLock(lock_surface) => {
                         return ControlFlow::Break(Ok(lock_surface
                             .cloned()
@@ -3091,6 +3138,9 @@ impl State {
             element_filter,
             |stage| {
                 match stage {
+                    // WMDE: nothing under the window switcher takes the pointer; its own grab
+                    // reads the pointer while it is open.
+                    Stage::Switcher(_) => return ControlFlow::Break(Ok(None)),
                     Stage::ZoomUI => {
                         if let Some(zoom_state) = shell.zoom_state()
                             && let Some((target, loc)) =

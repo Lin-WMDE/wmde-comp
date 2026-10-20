@@ -276,6 +276,10 @@ impl CompositorHandler for State {
         if let Some(output) = shell.visible_output_for_surface(surface) {
             self.backend.schedule_render(output);
         }
+        // WMDE: a window in the open window switcher - minimized ones are visible nowhere else.
+        if let Some(output) = shell.switcher_output_for_surface(surface) {
+            self.backend.schedule_render(output);
+        }
 
         if mapped {
             return;

@@ -33,6 +33,7 @@ use crate::{
         focus::{FocusTarget, Stage, render_input_order, target::WindowGroup},
         grabs::{MoveGrabPart, SeatMenuGrabState, SeatMoveGrabState},
         layout::tiling::ANIMATION_DURATION,
+        switcher::SwitcherElement,
         zoom::ZoomState,
     },
     utils::{prelude::*, quirks::workspace_overview_is_open},
@@ -909,6 +910,13 @@ where
                     elements.push(CosmicElement::Zoom(elem))
                 });
             }
+            // WMDE: the window switcher; the desktop layers under it are stages of their own.
+            Stage::Switcher(switcher) => switcher.render(renderer, scale, &mut |elem| match elem {
+                SwitcherElement::Workspace(elem) => {
+                    elements.extend(crop_to_output(elem).map(Into::into))
+                }
+                SwitcherElement::Iced(elem) => elements.push(elem.into()),
+            }),
             Stage::SessionLock(lock_surface) => {
                 session_lock_elements(renderer, output, lock_surface, blur_strength, &mut |elem| {
                     elements.extend(crop_to_output(elem.into()).map(Into::into))

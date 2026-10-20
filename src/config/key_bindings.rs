@@ -14,6 +14,8 @@ pub enum Action {
 // Behaviors which are internally defined and emitted.
 pub enum PrivateAction {
     Escape,
+    // WMDE: a key of the open window switcher.
+    Switcher(crate::shell::switcher::SwitcherOp),
     Resizing(
         shortcuts::action::ResizeDirection,
         shortcuts::action::ResizeEdge,

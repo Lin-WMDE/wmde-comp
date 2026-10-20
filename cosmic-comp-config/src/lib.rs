@@ -124,6 +124,9 @@ pub struct CosmicCompConfig {
     // WMDE: a trial, see src/backend/render/mica.rs. Upstream has no such field.
     /// Draws Mica (the blurred, tinted wallpaper) under the title bars the compositor draws
     pub mica_titlebars: bool,
+    // WMDE: the Alt+Tab switcher, see src/shell/switcher. Upstream has no such field.
+    /// Look and contents of the window switcher
+    pub window_switcher: WindowSwitcherConfig,
 }
 
 impl Default for CosmicCompConfig {
@@ -170,6 +173,39 @@ impl Default for CosmicCompConfig {
             activation_policy: ActivationPolicy::default(),
             decoration_preference: DecorationPreference::default(),
             mica_titlebars: false,
+            window_switcher: WindowSwitcherConfig::default(),
+        }
+    }
+}
+
+/// How the window switcher (NextWindow / PrevWindow) looks.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum WindowSwitcherStyle {
+    /// A grid of live window thumbnails over the blurred desktop.
+    #[default]
+    Grid,
+    /// No switcher on screen: every press focuses the next window right away.
+    None,
+}
+
+// `default`: an option added later must not make every existing file fail to
+// deserialize, which `get_entry` would swallow as "reset everyone to defaults".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WindowSwitcherConfig {
+    pub style: WindowSwitcherStyle,
+    /// List minimized windows too; picking one restores it.
+    pub include_minimized: bool,
+    /// Blur the desktop behind the thumbnails instead of only dimming it.
+    pub blur_background: bool,
+}
+
+impl Default for WindowSwitcherConfig {
+    fn default() -> Self {
+        WindowSwitcherConfig {
+            style: WindowSwitcherStyle::Grid,
+            include_minimized: true,
+            blur_background: true,
         }
     }
 }
@@ -460,5 +496,26 @@ mod test {
         assert_eq!(fs.arm_delay(secs(1)), Some(secs(2)));
 
         assert_eq!(OFF.arm_delay(Duration::ZERO), None);
+    }
+
+    #[test]
+    fn window_switcher_partial_file_keeps_other_defaults() {
+        use super::{WindowSwitcherConfig, WindowSwitcherStyle};
+
+        let cfg: WindowSwitcherConfig = ron::from_str("(blur_background: false)").unwrap();
+        assert_eq!(
+            cfg,
+            WindowSwitcherConfig {
+                blur_background: false,
+                ..WindowSwitcherConfig::default()
+            }
+        );
+
+        let none = WindowSwitcherConfig {
+            style: WindowSwitcherStyle::None,
+            ..WindowSwitcherConfig::default()
+        };
+        let text = ron::to_string(&none).unwrap();
+        assert_eq!(ron::from_str::<WindowSwitcherConfig>(&text).unwrap(), none);
     }
 }
