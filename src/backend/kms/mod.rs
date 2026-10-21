@@ -69,6 +69,12 @@ pub use surface::Timings;
 
 use super::render::{CLEAR_COLOR, CursorMode, output_elements};
 
+// WMDE: the connector's "max bpc" stays at the driver's value. A changed max_requested_bpc
+// makes the kernel do a full modeset at the same mode: on amdgpu (8 by default, range 8-16)
+// raising it to the top of the range resynced the monitor on the first frame after the boot
+// splash, and a saved outputs.ron carries the raised value into every later start.
+const WRITE_MAX_BPC: bool = false;
+
 #[derive(Debug)]
 pub struct KmsState {
     pub drm_devices: IndexMap<DrmNode, Device>,
@@ -1246,7 +1252,8 @@ impl KmsGuard<'_> {
                             compositor
                         };
 
-                        if let Some(bpc) = output_config.0.max_bpc
+                        if WRITE_MAX_BPC
+                            && let Some(bpc) = output_config.0.max_bpc
                             && let Err(err) = drm_helpers::set_max_bpc(drm.device(), conn, bpc)
                         {
                             warn!(
