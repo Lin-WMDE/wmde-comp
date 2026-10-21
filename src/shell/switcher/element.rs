@@ -302,7 +302,20 @@ pub fn push_thumbnail<R>(
         _ => None,
     };
 
-    for (target, rect) in members {
+    // The fit `constrain_render_elements` makes, for the shadows, which are drawn at their size
+    // in the thumbnail instead of being scaled down.
+    let fit_scale = f64::min(
+        target_rect.size.w as f64 / reference.size.w.max(1) as f64,
+        target_rect.size.h as f64 / reference.size.h.max(1) as f64,
+    );
+    let fit_offset = target_rect.loc.to_f64()
+        + Point::<f64, Physical>::from((
+            (target_rect.size.w as f64 - reference.size.w as f64 * fit_scale) / 2.,
+            (target_rect.size.h as f64 - reference.size.h as f64 * fit_scale) / 2.,
+        ));
+
+    let bottom = members.len().saturating_sub(1);
+    for (i, (target, rect)) in members.iter().enumerate() {
         let place = origin + rect.loc.to_physical_precise_round(scale);
         match target {
             FocusTarget::Window(mapped) => {
@@ -320,7 +333,26 @@ pub fn push_thumbnail<R>(
                     &mut |elem| upper.extend(fit(elem)),
                     &mut |elem| lower.extend(fit(elem)),
                 );
-                for elem in upper.into_iter().chain(lower) {
+                // A window over another one of the cell, a dialog over its parent, keeps its
+                // shadow, or it melts into the window under it. Between the window and its
+                // lower elements, as the floating layer draws it.
+                let shadow = (i < bottom)
+                    .then(|| {
+                        let at = fit_offset
+                            + (location - origin - reference.loc)
+                                .to_f64()
+                                .upscale(fit_scale);
+                        mapped.shadow_render_element::<R, CosmicMappedRenderElement<R>>(
+                            renderer,
+                            at.to_i32_round(),
+                            None,
+                            Scale::from(scale),
+                            fit_scale,
+                            alpha,
+                        )
+                    })
+                    .flatten();
+                for elem in upper.into_iter().chain(shadow).chain(lower) {
                     push(SwitcherElement::Workspace(WorkspaceRenderElement::Window(
                         elem,
                     )));
