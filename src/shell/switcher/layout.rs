@@ -291,6 +291,34 @@ pub fn hold_released(hold: &Modifiers, now: &Modifiers) -> bool {
         || (hold.shift && now.shift))
 }
 
+/// One cell per window family: each entry that keeps a cell, with the entries behind it.
+/// `dialog_of` is the modal dialog that takes an entry's focus (`Shell::resolve_modal_redirect`);
+/// the entry goes behind that dialog when the dialog is listed and passes the focus on no
+/// further. A cycle of X11 transients, where every window has a dialog, keeps all its cells.
+pub fn modal_families<T: Clone + PartialEq>(
+    entries: Vec<T>,
+    dialog_of: impl Fn(&T) -> Option<T>,
+) -> Vec<(T, Vec<T>)> {
+    let heads = entries
+        .iter()
+        .map(|t| dialog_of(t).filter(|d| entries.contains(d) && dialog_of(d).is_none()))
+        .collect::<Vec<_>>();
+    let mut families = entries
+        .iter()
+        .zip(&heads)
+        .filter(|(_, head)| head.is_none())
+        .map(|(t, _)| (t.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    for (t, head) in entries.into_iter().zip(heads) {
+        if let Some(head) = head
+            && let Some((_, behind)) = families.iter_mut().find(|(h, _)| *h == head)
+        {
+            behind.push(t);
+        }
+    }
+    families
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +542,61 @@ mod tests {
         // Letting go of one of two held modifiers does not close it yet.
         assert!(!hold_released(&ctrl_alt, &alt));
         assert!(hold_released(&ctrl_alt, &Modifiers::default()));
+    }
+
+    /// `modal_families` over window names, with the dialog each one's focus goes to.
+    fn families(
+        entries: &[&'static str],
+        dialogs: &[(&str, &'static str)],
+    ) -> Vec<(&'static str, Vec<&'static str>)> {
+        modal_families(entries.to_vec(), |t| {
+            dialogs.iter().find(|(w, _)| w == t).map(|(_, d)| *d)
+        })
+    }
+
+    #[test]
+    fn windows_without_dialogs_keep_their_cells() {
+        assert_eq!(
+            families(&["a", "b"], &[]),
+            vec![("a", vec![]), ("b", vec![])]
+        );
+    }
+
+    #[test]
+    fn a_listed_modal_dialog_stands_for_its_parent() {
+        // The dialog was focused last, its parent before it.
+        assert_eq!(
+            families(&["dialog", "parent", "other"], &[("parent", "dialog")]),
+            vec![("dialog", vec!["parent"]), ("other", vec![])]
+        );
+    }
+
+    #[test]
+    fn a_chain_of_dialogs_is_one_cell() {
+        // The focus of the parent and of the first dialog goes to the deepest one.
+        assert_eq!(
+            families(
+                &["parent", "first", "second"],
+                &[("parent", "second"), ("first", "second")]
+            ),
+            vec![("second", vec!["parent", "first"])]
+        );
+    }
+
+    #[test]
+    fn a_parent_keeps_its_cell_when_its_dialog_is_not_listed() {
+        // A minimized dialog left out, or one moved to another workspace.
+        assert_eq!(
+            families(&["parent", "other"], &[("parent", "dialog")]),
+            vec![("parent", vec![]), ("other", vec![])]
+        );
+    }
+
+    #[test]
+    fn a_cycle_of_transients_keeps_every_cell() {
+        assert_eq!(
+            families(&["a", "b"], &[("a", "b"), ("b", "a")]),
+            vec![("a", vec![]), ("b", vec![])]
+        );
     }
 }

@@ -13,6 +13,10 @@
 //! Delete, or the close button the selected thumbnail carries, closes that window and leaves the
 //! switcher open.
 //!
+//! A window with a modal dialog gets no cell of its own: the dialog's cell stands for both, since
+//! focusing the window would land on the dialog anyway (`Shell::set_focus`). When the dialog goes
+//! away while the switcher is open, the window takes its cell.
+//!
 //! The switcher shows only after [`SHOW_DELAY`]: a quick Alt+Tab switches to the previous
 //! window without drawing anything. On screen it is a grid of live thumbnails over the blurred
 //! and dimmed desktop - wallpaper and desktop icons, without windows, panels or overlays (see
@@ -122,6 +126,9 @@ pub struct Session {
     seat: Seat<State>,
     output: Output,
     entries: Vec<FocusTarget>,
+    /// The windows behind each entry, whose modal dialog it is. One takes the entry's place when
+    /// the dialog goes away.
+    families: Vec<Vec<FocusTarget>>,
     selected: usize,
     /// What has to stay held, `None` for a session that stays open until Enter or Esc.
     hold: Option<shortcuts::Modifiers>,
@@ -205,6 +212,13 @@ fn shrunk(rect: Rectangle<i32, Logical>, factor: f64) -> Rectangle<i32, Logical>
     )
 }
 
+/// The modal dialog that takes the focus of `target` (`Shell::set_focus`), and its cell.
+pub(super) fn dialog_of(shell: &Shell, target: &FocusTarget) -> Option<FocusTarget> {
+    shell
+        .resolve_modal_redirect(&target.clone().into())
+        .map(FocusTarget::Window)
+}
+
 fn add(entries: &mut Vec<FocusTarget>, target: FocusTarget) {
     // By the window and not the target: a window that went fullscreen is listed once.
     let surface = surface_of(&target);
@@ -214,13 +228,14 @@ fn add(entries: &mut Vec<FocusTarget>, target: FocusTarget) {
 }
 
 /// The windows of the active workspace of `output` and its sticky windows: most recently used
-/// first, then the ones never focused, then the minimized ones.
+/// first, then the ones never focused, then the minimized ones. Each comes with the windows its
+/// cell stands for, those whose modal dialog it is.
 fn collect(
     shell: &Shell,
     seat: &Seat<State>,
     output: &Output,
     include_minimized: bool,
-) -> Vec<FocusTarget> {
+) -> Vec<(FocusTarget, Vec<FocusTarget>)> {
     let Some(set) = shell.workspaces.sets.get(output) else {
         return Vec::new();
     };
@@ -259,7 +274,7 @@ fn collect(
     if include_minimized {
         open.extend(minimized);
     }
-    open
+    layout::modal_families(open, |t| dialog_of(shell, t))
 }
 
 impl Session {
@@ -508,7 +523,10 @@ impl State {
                 return;
             }
             let output = seat.active_output();
-            let entries = collect(&shell, seat, &output, config.include_minimized);
+            let (entries, families): (Vec<_>, Vec<_>) =
+                collect(&shell, seat, &output, config.include_minimized)
+                    .into_iter()
+                    .unzip();
             if entries.is_empty() {
                 return;
             }
@@ -542,6 +560,7 @@ impl State {
                 seat: seat.clone(),
                 output,
                 entries,
+                families,
                 selected,
                 hold: hold.clone(),
                 visible: false,
@@ -774,27 +793,47 @@ impl State {
     }
 
     /// Drops listed windows that went away, rebuilding the grid, and closes the switcher when
-    /// none is left.
+    /// none is left. The windows a dialog that went away stood for take its place, grouped
+    /// anew: one of them may still have a dialog of its own.
     pub fn switcher_prune(&mut self) {
         let evlh = self.common.event_loop_handle.clone();
         let theme = self.common.theme.clone();
         let output = {
             let mut shell = self.common.shell.write();
+            let Some(old) = shell.switcher.as_ref() else {
+                return;
+            };
+            if old.entries.iter().all(|t| t.alive()) {
+                return;
+            }
+            let selected = old.entries.get(old.selected).cloned();
+            // Origins are taken when the switcher shows, and stay empty until then.
+            let shown = !old.origins.is_empty();
+            let mut entries = Vec::new();
+            let mut families = Vec::new();
+            let mut origins = Vec::new();
+            for (i, (target, family)) in old.entries.iter().zip(&old.families).enumerate() {
+                if target.alive() {
+                    entries.push(target.clone());
+                    families.push(family.clone());
+                    origins.extend(old.origins.get(i).copied());
+                    continue;
+                }
+                let behind = family.iter().filter(|t| t.alive()).cloned().collect();
+                for (target, family) in layout::modal_families(behind, |t| dialog_of(&shell, t)) {
+                    if shown {
+                        origins.push(origin_of(&shell, &old.output, &target));
+                    }
+                    entries.push(target);
+                    families.push(family);
+                }
+            }
             let Some(session) = shell.switcher.as_mut() else {
                 return;
             };
-            if session.entries.iter().all(|t| t.alive()) {
-                return;
-            }
-            let selected = session.entries.get(session.selected).cloned();
-            let alive = session
-                .entries
-                .iter()
-                .map(|t| t.alive())
-                .collect::<Vec<_>>();
-            let mut keep = alive.iter();
-            session.origins.retain(|_| *keep.next().unwrap_or(&true));
-            session.entries.retain(|t| t.alive());
+            session.entries = entries;
+            session.families = families;
+            session.origins = origins;
             if session.entries.is_empty() {
                 std::mem::drop(shell);
                 self.switcher_finish(None);

@@ -4656,6 +4656,14 @@ impl Shell {
         // Drop windows that closed mid-cycle; we re-locate the focus by identity below,
         // so shifting indices here can never desync the cycle.
         order.retain(|t| t.alive());
+        // WMDE: one stop per window family, as in the switcher: a window whose modal dialog is
+        // in the order is skipped, focusing it would land on the dialog. Grouped on every press,
+        // so the window comes back once the dialog closes.
+        let order =
+            switcher::layout::modal_families(order.clone(), |t| switcher::dialog_of(self, t))
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>();
         let n = order.len();
         if n == 0 {
             self.alt_tab = None;
