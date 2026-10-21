@@ -528,11 +528,12 @@ impl Shell {
             .unwrap_or_default()
     }
 
-    /// Whether a listed window went away and the session needs [`State::switcher_prune`].
+    /// Whether a shown window went away, listed or behind a dialog, and the session needs
+    /// [`State::switcher_prune`].
     pub fn switcher_needs_prune(&self) -> bool {
         self.switcher
             .as_ref()
-            .is_some_and(|s| s.entries.iter().any(|t| !t.alive()))
+            .is_some_and(|s| s.shown().any(|t| !t.alive()))
     }
 
     /// The session on `output`, if any, for `Common::remove_output` to cancel.
@@ -849,9 +850,10 @@ impl State {
         layout::cell_at(&session.view.as_ref()?.layout, local)
     }
 
-    /// Drops listed windows that went away, rebuilding the grid, and closes the switcher when
+    /// Drops shown windows that went away, rebuilding the grid, and closes the switcher when
     /// none is left. The windows a dialog that went away stood for take its place, grouped
-    /// anew: one of them may still have a dialog of its own.
+    /// anew: one of them may still have a dialog of its own. A window gone from behind a dialog
+    /// that stays leaves its cell, reshaped and named after what is left.
     pub fn switcher_prune(&mut self) {
         let evlh = self.common.event_loop_handle.clone();
         let theme = self.common.theme.clone();
@@ -860,7 +862,7 @@ impl State {
             let Some(old) = shell.switcher.as_ref() else {
                 return;
             };
-            if old.entries.iter().all(|t| t.alive()) {
+            if old.shown().all(|t| t.alive()) {
                 return;
             }
             let selected = old.entries.get(old.selected).cloned();
@@ -871,9 +873,19 @@ impl State {
             let mut shapes = Vec::new();
             for (i, (target, family)) in old.entries.iter().zip(&old.families).enumerate() {
                 if target.alive() {
+                    let lost = family.iter().any(|t| !t.alive());
+                    let family = family
+                        .iter()
+                        .filter(|t| t.alive())
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if shown && lost {
+                        shapes.push(shape_of(&shell, &old.output, target, &family));
+                    } else {
+                        shapes.extend(old.shapes.get(i).cloned());
+                    }
                     entries.push(target.clone());
-                    families.push(family.clone());
-                    shapes.extend(old.shapes.get(i).cloned());
+                    families.push(family);
                     continue;
                 }
                 let behind = family.iter().filter(|t| t.alive()).cloned().collect();
