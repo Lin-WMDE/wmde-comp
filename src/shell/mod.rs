@@ -1670,6 +1670,12 @@ impl Common {
             self.event_loop_handle
                 .insert_idle(|state| state.switcher_prune());
         }
+        // WMDE: a window named on a switcher cell changed its title: rename the cell here, on the
+        // main thread, never from the render.
+        if self.shell.read().switcher_titles_stale() {
+            self.event_loop_handle
+                .insert_idle(|state| state.switcher_sync_titles());
+        }
         self.popups.cleanup();
         self.toplevel_info_state.refresh(&self.workspace_state);
         self.refresh_idle_inhibit();

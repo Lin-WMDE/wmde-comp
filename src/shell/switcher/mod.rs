@@ -313,6 +313,18 @@ fn collect(
 }
 
 impl Session {
+    /// The title each cell should carry now, by index: its family root's, while the root lives.
+    fn titles(&self) -> impl Iterator<Item = (usize, String)> + '_ {
+        self.entries
+            .iter()
+            .zip(&self.families)
+            .enumerate()
+            .filter_map(|(i, (target, family))| {
+                let root = root_of(target, family);
+                root.alive().then(|| (i, surface_of(root).title()))
+            })
+    }
+
     /// Every window the switcher shows: the entries and the windows behind them.
     fn shown(&self) -> impl Iterator<Item = &FocusTarget> {
         self.entries.iter().chain(self.families.iter().flatten())
@@ -407,17 +419,14 @@ impl Session {
         let chrome = ((open - 0.5) * 2.0).clamp(0.0, 1.0) as f32;
 
         if chrome > 0.0 {
-            for ((cell, elem), (target, family)) in view
-                .layout
-                .cells
-                .iter()
-                .zip(&view.cells)
-                .zip(self.entries.iter().zip(&self.families))
+            // Titles are not set from here: this runs on the render thread (see
+            // `State::switcher_sync_titles`).
+            for ((cell, elem), target) in
+                view.layout.cells.iter().zip(&view.cells).zip(&self.entries)
             {
                 if !target.alive() {
                     continue;
                 }
-                elem.set_title(&surface_of(root_of(target, family)).title());
                 elem.push_render_elements(
                     renderer,
                     cell.frame.loc.to_physical_precise_round(scale),
@@ -526,6 +535,19 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Whether a window named on a cell of the shown switcher changed its title, and the session
+    /// needs [`State::switcher_sync_titles`].
+    pub fn switcher_titles_stale(&self) -> bool {
+        self.switcher
+            .as_ref()
+            .filter(|s| s.visible)
+            .and_then(|s| Some((s, s.view.as_ref()?)))
+            .is_some_and(|(s, view)| {
+                s.titles()
+                    .any(|(i, title)| view.cells.get(i).is_some_and(|c| !c.has_title(&title)))
+            })
     }
 
     /// Whether a shown window went away, listed or behind a dialog, and the session needs
@@ -848,6 +870,28 @@ impl State {
             .filter(|s| s.generation == generation && s.visible)?;
         let local = location - session.output.geometry().loc.as_logical().to_f64();
         layout::cell_at(&session.view.as_ref()?.layout, local)
+    }
+
+    /// Gives the cells the titles their windows carry now. Only from the main thread, never from
+    /// the render: updating a cell queues its task on the executor of the calling thread, and
+    /// dropping the cell on the main thread then aborts the compositor.
+    pub fn switcher_sync_titles(&mut self) {
+        let output = {
+            let shell = self.common.shell.read();
+            let Some(session) = shell.switcher.as_ref().filter(|s| s.visible) else {
+                return;
+            };
+            let Some(view) = session.view.as_ref() else {
+                return;
+            };
+            for (i, title) in session.titles() {
+                if let Some(cell) = view.cells.get(i) {
+                    cell.set_title(&title);
+                }
+            }
+            session.output.clone()
+        };
+        self.backend.schedule_render(&output);
     }
 
     /// Drops shown windows that went away, rebuilding the grid, and closes the switcher when

@@ -121,8 +121,12 @@ impl SwitcherCell {
         }
     }
 
+    pub fn has_title(&self, title: &str) -> bool {
+        self.elem.with_program(|p| p.title == title)
+    }
+
     pub fn set_title(&self, title: &str) {
-        if self.elem.with_program(|p| p.title != title) {
+        if !self.has_title(title) {
             self.send(Message::Title(title.to_string()));
         }
     }
