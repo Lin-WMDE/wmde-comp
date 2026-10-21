@@ -319,6 +319,73 @@ pub fn modal_families<T: Clone + PartialEq>(
     families
 }
 
+/// The windows behind a cell's dialog `head`, top-first: the one right under it, on down to the
+/// root. They form a chain of modal parents; one off the chain goes to the bottom.
+pub fn modal_chain<T>(
+    head: &T,
+    mut behind: Vec<T>,
+    is_parent_of: impl Fn(&T, &T) -> bool,
+) -> Vec<T> {
+    let mut chain = Vec::with_capacity(behind.len());
+    while let Some(i) = behind
+        .iter()
+        .position(|p| is_parent_of(p, chain.last().unwrap_or(head)))
+    {
+        chain.push(behind.remove(i));
+    }
+    chain.extend(behind);
+    chain
+}
+
+/// Where the windows of one cell lie, top-first, and the box around them all, which the
+/// thumbnail fits into its cell. `on_screen` when these are the windows' own places on the
+/// output, where the animation starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyShape {
+    pub bounds: Rectangle<i32, Logical>,
+    pub members: Vec<Rectangle<i32, Logical>>,
+    pub on_screen: bool,
+}
+
+/// The shape of a cell from each window's place on screen, if it has one, and its size,
+/// top-first. With every window on screen they stay where they are. Otherwise they are laid out
+/// anew: the bottom one at the origin, each one above centred over the one under it, the way a
+/// modal dialog is placed over its parent.
+pub fn family_shape(
+    placed: &[(Option<Rectangle<i32, Logical>>, Size<i32, Logical>)],
+) -> FamilyShape {
+    let on_screen = placed.iter().all(|(rect, _)| rect.is_some());
+    let members = if on_screen {
+        placed
+            .iter()
+            .filter_map(|(rect, _)| *rect)
+            .collect::<Vec<_>>()
+    } else {
+        let mut members = Vec::with_capacity(placed.len());
+        let mut under: Option<Rectangle<i32, Logical>> = None;
+        for (_, size) in placed.iter().rev() {
+            let loc = under.map_or(Point::default(), |u| {
+                u.loc + Point::from(((u.size.w - size.w) / 2, (u.size.h - size.h) / 2))
+            });
+            let rect = Rectangle::new(loc, *size);
+            members.push(rect);
+            under = Some(rect);
+        }
+        members.reverse();
+        members
+    };
+    let bounds = members
+        .iter()
+        .copied()
+        .reduce(Rectangle::merge)
+        .unwrap_or_default();
+    FamilyShape {
+        bounds,
+        members,
+        on_screen,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +664,103 @@ mod tests {
         assert_eq!(
             families(&["a", "b"], &[("a", "b"), ("b", "a")]),
             vec![("a", vec![]), ("b", vec![])]
+        );
+    }
+
+    /// `modal_chain` over window names, with `(parent, child)` pairs.
+    fn chain(
+        head: &'static str,
+        behind: &[&'static str],
+        parents: &[(&str, &str)],
+    ) -> Vec<&'static str> {
+        modal_chain(&head, behind.to_vec(), |p, c| parents.contains(&(*p, *c)))
+    }
+
+    #[test]
+    fn the_chain_runs_from_the_dialog_down_to_the_root() {
+        assert_eq!(
+            chain("dialog", &["parent"], &[("parent", "dialog")]),
+            vec!["parent"]
+        );
+        assert_eq!(
+            chain(
+                "second",
+                &["parent", "first"],
+                &[("parent", "first"), ("first", "second")]
+            ),
+            vec!["first", "parent"]
+        );
+    }
+
+    #[test]
+    fn a_window_off_the_chain_goes_to_the_bottom() {
+        assert_eq!(
+            chain("dialog", &["stranger", "parent"], &[("parent", "dialog")]),
+            vec!["parent", "stranger"]
+        );
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    #[test]
+    fn a_lone_window_keeps_its_place() {
+        let r = rect(100, 50, 800, 600);
+        assert_eq!(
+            family_shape(&[(Some(r), r.size)]),
+            FamilyShape {
+                bounds: r,
+                members: vec![r],
+                on_screen: true
+            }
+        );
+        let shape = family_shape(&[(None, r.size)]);
+        assert_eq!(shape.bounds, rect(0, 0, 800, 600));
+        assert!(!shape.on_screen);
+    }
+
+    #[test]
+    fn a_dialog_inside_its_parent_keeps_the_parent_box() {
+        let parent = rect(100, 50, 800, 600);
+        let dialog = rect(340, 250, 320, 160);
+        let shape = family_shape(&[(Some(dialog), dialog.size), (Some(parent), parent.size)]);
+        assert_eq!(shape.bounds, parent);
+        assert_eq!(shape.members, vec![dialog, parent]);
+        assert!(shape.on_screen);
+    }
+
+    #[test]
+    fn a_dialog_wider_than_its_parent_widens_the_box() {
+        let parent = rect(100, 50, 800, 600);
+        let dialog = rect(50, 200, 900, 200);
+        let shape = family_shape(&[(Some(dialog), dialog.size), (Some(parent), parent.size)]);
+        assert_eq!(shape.bounds, rect(50, 50, 900, 600));
+    }
+
+    #[test]
+    fn off_screen_windows_are_centred_over_the_one_under() {
+        let parent = rect(100, 50, 800, 600);
+        let shape = family_shape(&[(None, Size::from((320, 160))), (Some(parent), parent.size)]);
+        assert_eq!(
+            shape.members,
+            vec![rect(240, 220, 320, 160), rect(0, 0, 800, 600)]
+        );
+        assert_eq!(shape.bounds, rect(0, 0, 800, 600));
+        assert!(!shape.on_screen);
+
+        let shape = family_shape(&[
+            (Some(rect(0, 0, 200, 100)), Size::from((200, 100))),
+            (None, Size::from((400, 300))),
+            (Some(parent), parent.size),
+        ]);
+        assert_eq!(
+            shape.members,
+            vec![
+                rect(300, 250, 200, 100),
+                rect(200, 150, 400, 300),
+                rect(0, 0, 800, 600)
+            ]
         );
     }
 }

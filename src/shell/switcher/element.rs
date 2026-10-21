@@ -252,11 +252,14 @@ impl Program for CellProgram {
     }
 }
 
-/// The picture of `target` fitted into `thumb` (output-local), top-first through `push`. At its
-/// own geometry it draws exactly where the window does, which the animation starts from.
+/// The picture of a cell fitted into `thumb` (output-local), top-first through `push`: each window
+/// of `members`, top-first, at its rectangle inside `bounds`, and `bounds` fitted into `thumb`.
+/// With the windows' own places it draws exactly where they are, which the animation starts
+/// from.
 pub fn push_thumbnail<R>(
     renderer: &mut R,
-    target: &FocusTarget,
+    members: &[(&FocusTarget, Rectangle<i32, Logical>)],
+    bounds: Rectangle<i32, Logical>,
     thumb: Rectangle<i32, Logical>,
     scale: f64,
     alpha: f32,
@@ -267,91 +270,98 @@ pub fn push_thumbnail<R>(
     CosmicMappedRenderElement<R>: smithay::backend::renderer::element::RenderElement<R>,
 {
     let target_rect = thumb.to_physical_precise_round(scale);
-    match target {
-        FocusTarget::Window(mapped) => {
-            let elem_geometry = mapped.geometry().to_physical_precise_round(scale);
-            let location = target_rect.loc - elem_geometry.loc;
-            // Same mapping as the tiling overview: each element is constrained against the
-            // window's geometry, so its parts keep their places relative to each other.
-            let fit = |element| match element {
-                CosmicMappedRenderElement::Stack(elem) => constrain_render_elements(
-                    std::iter::once(elem),
-                    location,
-                    target_rect,
-                    elem_geometry,
-                    ConstrainScaleBehavior::Fit,
-                    ConstrainAlign::CENTER,
-                    scale,
-                )
-                .next()
-                .map(CosmicMappedRenderElement::TiledStack),
-                CosmicMappedRenderElement::Window(elem) => constrain_render_elements(
-                    std::iter::once(elem),
-                    location,
-                    target_rect,
-                    elem_geometry,
-                    ConstrainScaleBehavior::Fit,
-                    ConstrainAlign::CENTER,
-                    scale,
-                )
-                .next()
-                .map(CosmicMappedRenderElement::TiledWindow),
-                // Focus indicators, overlays and the like belong to the window on screen.
-                _ => None,
-            };
+    let reference = bounds.to_physical_precise_round(scale);
+    // Same mapping as the tiling overview, with one origin for all the windows of the cell:
+    // every element is scaled about it and constrained against `bounds`, so the windows and
+    // their parts keep their places relative to each other.
+    let origin = target_rect.loc - reference.loc;
+    let fit = |element| match element {
+        CosmicMappedRenderElement::Stack(elem) => constrain_render_elements(
+            std::iter::once(elem),
+            origin,
+            target_rect,
+            reference,
+            ConstrainScaleBehavior::Fit,
+            ConstrainAlign::CENTER,
+            scale,
+        )
+        .next()
+        .map(CosmicMappedRenderElement::TiledStack),
+        CosmicMappedRenderElement::Window(elem) => constrain_render_elements(
+            std::iter::once(elem),
+            origin,
+            target_rect,
+            reference,
+            ConstrainScaleBehavior::Fit,
+            ConstrainAlign::CENTER,
+            scale,
+        )
+        .next()
+        .map(CosmicMappedRenderElement::TiledWindow),
+        // Focus indicators, overlays and the like belong to the window on screen.
+        _ => None,
+    };
 
-            let mut upper = Vec::new();
-            let mut lower = Vec::new();
-            mapped.push_render_elements(
-                renderer,
-                location,
-                None,
-                Scale::from(scale),
-                alpha,
-                None,
-                None,
-                &mut |elem| upper.extend(fit(elem)),
-                &mut |elem| lower.extend(fit(elem)),
-            );
-            for elem in upper.into_iter().chain(lower) {
-                push(SwitcherElement::Workspace(WorkspaceRenderElement::Window(
-                    elem,
-                )));
+    for (target, rect) in members {
+        let place = origin + rect.loc.to_physical_precise_round(scale);
+        match target {
+            FocusTarget::Window(mapped) => {
+                let location = place - mapped.geometry().loc.to_physical_precise_round(scale);
+                let mut upper = Vec::new();
+                let mut lower = Vec::new();
+                mapped.push_render_elements(
+                    renderer,
+                    location,
+                    None,
+                    Scale::from(scale),
+                    alpha,
+                    None,
+                    None,
+                    &mut |elem| upper.extend(fit(elem)),
+                    &mut |elem| lower.extend(fit(elem)),
+                );
+                for elem in upper.into_iter().chain(lower) {
+                    push(SwitcherElement::Workspace(WorkspaceRenderElement::Window(
+                        elem,
+                    )));
+                }
             }
-        }
-        FocusTarget::Fullscreen(surface) => {
-            let elem_geometry = SpaceElement::geometry(surface).to_physical_precise_round(scale);
-            let location = target_rect.loc - elem_geometry.loc;
-            surface.push_render_elements(
-                renderer,
-                location,
-                Scale::from(scale),
-                alpha,
-                None,
-                None,
-                false,
-                [0; 4],
-                0,
-                &mut |elem| {
-                    let elem: CosmicWindowRenderElement<R> = elem.into();
-                    if let Some(elem) = constrain_render_elements(
-                        std::iter::once(elem),
-                        location,
-                        target_rect,
-                        elem_geometry,
-                        ConstrainScaleBehavior::Fit,
-                        ConstrainAlign::CENTER,
-                        scale,
-                    )
-                    .next()
-                    {
-                        push(SwitcherElement::Workspace(WorkspaceRenderElement::Window(
-                            CosmicMappedRenderElement::TiledWindow(elem),
-                        )));
-                    }
-                },
-                None,
-            );
+            FocusTarget::Fullscreen(surface) => {
+                let location = place
+                    - SpaceElement::geometry(surface)
+                        .loc
+                        .to_physical_precise_round(scale);
+                surface.push_render_elements(
+                    renderer,
+                    location,
+                    Scale::from(scale),
+                    alpha,
+                    None,
+                    None,
+                    false,
+                    [0; 4],
+                    0,
+                    &mut |elem| {
+                        let elem: CosmicWindowRenderElement<R> = elem.into();
+                        if let Some(elem) = constrain_render_elements(
+                            std::iter::once(elem),
+                            origin,
+                            target_rect,
+                            reference,
+                            ConstrainScaleBehavior::Fit,
+                            ConstrainAlign::CENTER,
+                            scale,
+                        )
+                        .next()
+                        {
+                            push(SwitcherElement::Workspace(WorkspaceRenderElement::Window(
+                                CosmicMappedRenderElement::TiledWindow(elem),
+                            )));
+                        }
+                    },
+                    None,
+                );
+            }
         }
     }
 }

@@ -14,8 +14,10 @@
 //! switcher open.
 //!
 //! A window with a modal dialog gets no cell of its own: the dialog's cell stands for both, since
-//! focusing the window would land on the dialog anyway (`Shell::set_focus`). When the dialog goes
-//! away while the switcher is open, the window takes its cell.
+//! focusing the window would land on the dialog anyway (`Shell::set_focus`). The cell shows the
+//! window with the dialog over it and carries the window's icon and title; picking and closing
+//! act on the dialog. When the dialog goes away while the switcher is open, the window takes its
+//! cell.
 //!
 //! The switcher shows only after [`SHOW_DELAY`]: a quick Alt+Tab switches to the previous
 //! window without drawing anything. On screen it is a grid of live thumbnails over the blurred
@@ -85,7 +87,7 @@ pub use self::element::SwitcherElement;
 use self::{
     element::SwitcherCell,
     grab::SwitcherGrab,
-    layout::{Dir, GridLayout, GridParams},
+    layout::{Dir, FamilyShape, GridLayout, GridParams},
 };
 
 /// How long the opening press has to be held before the switcher shows. A quicker Alt+Tab
@@ -126,8 +128,9 @@ pub struct Session {
     seat: Seat<State>,
     output: Output,
     entries: Vec<FocusTarget>,
-    /// The windows behind each entry, whose modal dialog it is. One takes the entry's place when
-    /// the dialog goes away.
+    /// The windows behind each entry, whose modal dialog it is, top-first: the one right under
+    /// the dialog first, the root last. The cell draws them under the dialog and is named after
+    /// the root; they take the entry's place when the dialog goes away.
     families: Vec<Vec<FocusTarget>>,
     selected: usize,
     /// What has to stay held, `None` for a session that stays open until Enter or Esc.
@@ -138,9 +141,9 @@ pub struct Session {
     animate: bool,
     /// Built when the switcher shows, rebuilt when a listed window goes away.
     view: Option<View>,
-    /// Where each entry's window is on screen, output-local; `None` for a minimized one. The
-    /// animation starts and ends there.
-    origins: Vec<Option<Rectangle<i32, Logical>>>,
+    /// Where the windows of each entry lie, output-local, taken when the switcher shows. The
+    /// animation starts and ends at the bounds of one that is on screen.
+    shapes: Vec<FamilyShape>,
     opened: Option<Instant>,
     /// Set once the session ended and only its closing animation runs, with the picked entry.
     closing: Option<(Instant, Option<usize>)>,
@@ -219,6 +222,38 @@ pub(super) fn dialog_of(shell: &Shell, target: &FocusTarget) -> Option<FocusTarg
         .map(FocusTarget::Window)
 }
 
+/// `targets` one family to a cell (`layout::modal_families`), each family top-first.
+fn group(shell: &Shell, targets: Vec<FocusTarget>) -> Vec<(FocusTarget, Vec<FocusTarget>)> {
+    layout::modal_families(targets, |t| dialog_of(shell, t))
+        .into_iter()
+        .map(|(head, behind)| {
+            let behind = layout::modal_chain(&head, behind, |p, c| {
+                surface_of(p).is_parent_of(&surface_of(c))
+            });
+            (head, behind)
+        })
+        .collect()
+}
+
+/// The window a cell is named after: the root of its family, or the entry itself.
+fn root_of<'a>(target: &'a FocusTarget, family: &'a [FocusTarget]) -> &'a FocusTarget {
+    family.last().unwrap_or(target)
+}
+
+/// Where `target` and the windows behind it lie on `output`.
+fn shape_of(
+    shell: &Shell,
+    output: &Output,
+    target: &FocusTarget,
+    family: &[FocusTarget],
+) -> FamilyShape {
+    let placed = std::iter::once(target)
+        .chain(family)
+        .map(|t| (origin_of(shell, output, t), size_of(t)))
+        .collect::<Vec<_>>();
+    layout::family_shape(&placed)
+}
+
 fn add(entries: &mut Vec<FocusTarget>, target: FocusTarget) {
     // By the window and not the target: a window that went fullscreen is listed once.
     let surface = surface_of(&target);
@@ -274,10 +309,15 @@ fn collect(
     if include_minimized {
         open.extend(minimized);
     }
-    layout::modal_families(open, |t| dialog_of(shell, t))
+    group(shell, open)
 }
 
 impl Session {
+    /// Every window the switcher shows: the entries and the windows behind them.
+    fn shown(&self) -> impl Iterator<Item = &FocusTarget> {
+        self.entries.iter().chain(self.families.iter().flatten())
+    }
+
     fn is_visible_on(&self, output: &Output) -> bool {
         self.visible && &self.output == output
     }
@@ -305,8 +345,12 @@ impl Session {
         let aspects = self
             .entries
             .iter()
-            .map(|t| {
-                let size = size_of(t);
+            .enumerate()
+            .map(|(i, t)| {
+                let size = self
+                    .shapes
+                    .get(i)
+                    .map_or_else(|| size_of(t), |s| s.bounds.size);
                 size.w as f64 / size.h.max(1) as f64
             })
             .collect::<Vec<_>>();
@@ -314,10 +358,10 @@ impl Session {
         let cells = layout
             .cells
             .iter()
-            .zip(&self.entries)
+            .zip(self.entries.iter().zip(&self.families))
             .enumerate()
-            .map(|(i, (cell, target))| {
-                let surface = surface_of(target);
+            .map(|(i, (cell, (target, family)))| {
+                let surface = surface_of(root_of(target, family));
                 let elem = SwitcherCell::new(
                     evlh.clone(),
                     theme.clone(),
@@ -363,13 +407,17 @@ impl Session {
         let chrome = ((open - 0.5) * 2.0).clamp(0.0, 1.0) as f32;
 
         if chrome > 0.0 {
-            for ((cell, elem), target) in
-                view.layout.cells.iter().zip(&view.cells).zip(&self.entries)
+            for ((cell, elem), (target, family)) in view
+                .layout
+                .cells
+                .iter()
+                .zip(&view.cells)
+                .zip(self.entries.iter().zip(&self.families))
             {
                 if !target.alive() {
                     continue;
                 }
-                elem.set_title(&surface_of(target).title());
+                elem.set_title(&surface_of(root_of(target, family)).title());
                 elem.push_render_elements(
                     renderer,
                     cell.frame.loc.to_physical_precise_round(scale),
@@ -389,13 +437,23 @@ impl Session {
             order.insert(0, pick);
         }
         for i in order {
-            let (Some(cell), Some(target)) = (view.layout.cells.get(i), self.entries.get(i)) else {
+            let (Some(cell), Some(target), Some(family), Some(shape)) = (
+                view.layout.cells.get(i),
+                self.entries.get(i),
+                self.families.get(i),
+                self.shapes.get(i),
+            ) else {
                 continue;
             };
             if !target.alive() {
                 continue;
             }
-            let (rect, alpha) = match self.origins.get(i).copied().flatten() {
+            let members = std::iter::once(target)
+                .chain(family)
+                .zip(shape.members.iter().copied())
+                .filter(|(t, _)| t.alive())
+                .collect::<Vec<_>>();
+            let (rect, alpha) = match shape.on_screen.then_some(shape.bounds) {
                 Some(origin) if open < 1.0 => (
                     ease(
                         EaseInOutCubic,
@@ -410,7 +468,7 @@ impl Session {
                 None if open < 1.0 => (shrunk(cell.thumb, 0.8 + 0.2 * eased), eased as f32),
                 _ => (cell.thumb, 1.0),
             };
-            element::push_thumbnail(renderer, target, rect, scale, alpha, push);
+            element::push_thumbnail(renderer, &members, shape.bounds, rect, scale, alpha, push);
         }
         element::push_dim(renderer, self.dim.clone(), area, eased as f32, push);
         if self.blur_background {
@@ -447,8 +505,7 @@ impl Shell {
             .filter(|s| s.visible)
             .or(self.switcher_closing.as_ref())?;
         session
-            .entries
-            .iter()
+            .shown()
             .any(|t| match t {
                 FocusTarget::Window(mapped) => mapped
                     .windows()
@@ -463,8 +520,7 @@ impl Shell {
     pub fn switcher_minimized_on(&self, output: &Output) -> Vec<CosmicSurface> {
         self.switcher_on(output)
             .map(|s| {
-                s.entries
-                    .iter()
+                s.shown()
                     .filter(|t| t.is_minimized())
                     .map(surface_of)
                     .collect()
@@ -568,7 +624,7 @@ impl State {
                 blur_background: config.blur_background,
                 animate: config.animate,
                 view: None,
-                origins: Vec::new(),
+                shapes: Vec::new(),
                 opened: None,
                 closing: None,
                 blur: Mutex::new(BlurState::default()),
@@ -604,11 +660,12 @@ impl State {
         let evlh = self.common.event_loop_handle.clone();
         let theme = self.common.theme.clone();
         let mut shell = self.common.shell.write();
-        let origins = match shell.switcher.as_ref() {
+        let shapes = match shell.switcher.as_ref() {
             Some(s) if s.generation == generation && !s.visible => s
                 .entries
                 .iter()
-                .map(|t| origin_of(&shell, &s.output, t))
+                .zip(&s.families)
+                .map(|(t, family)| shape_of(&shell, &s.output, t, family))
                 .collect::<Vec<_>>(),
             _ => return,
         };
@@ -617,7 +674,7 @@ impl State {
         };
         session.timer = None;
         session.visible = true;
-        session.origins = origins;
+        session.shapes = shapes;
         session.opened = Some(Instant::now());
         session.build_view(evlh, theme);
         let output = session.output.clone();
@@ -807,22 +864,22 @@ impl State {
                 return;
             }
             let selected = old.entries.get(old.selected).cloned();
-            // Origins are taken when the switcher shows, and stay empty until then.
-            let shown = !old.origins.is_empty();
+            // Shapes are taken when the switcher shows, and stay empty until then.
+            let shown = !old.shapes.is_empty();
             let mut entries = Vec::new();
             let mut families = Vec::new();
-            let mut origins = Vec::new();
+            let mut shapes = Vec::new();
             for (i, (target, family)) in old.entries.iter().zip(&old.families).enumerate() {
                 if target.alive() {
                     entries.push(target.clone());
                     families.push(family.clone());
-                    origins.extend(old.origins.get(i).copied());
+                    shapes.extend(old.shapes.get(i).cloned());
                     continue;
                 }
                 let behind = family.iter().filter(|t| t.alive()).cloned().collect();
-                for (target, family) in layout::modal_families(behind, |t| dialog_of(&shell, t)) {
+                for (target, family) in group(&shell, behind) {
                     if shown {
-                        origins.push(origin_of(&shell, &old.output, &target));
+                        shapes.push(shape_of(&shell, &old.output, &target, &family));
                     }
                     entries.push(target);
                     families.push(family);
@@ -833,7 +890,7 @@ impl State {
             };
             session.entries = entries;
             session.families = families;
-            session.origins = origins;
+            session.shapes = shapes;
             if session.entries.is_empty() {
                 std::mem::drop(shell);
                 self.switcher_finish(None);
