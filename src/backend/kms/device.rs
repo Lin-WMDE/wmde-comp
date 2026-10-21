@@ -1268,7 +1268,10 @@ fn populate_modes(
     position: (u32, u32),
 ) -> Result<()> {
     let conn_info = drm.get_connector(conn, false)?;
-    let max_bpc = drm_helpers::get_max_bpc(drm, conn)?.map(|(_val, range)| range.end.min(16));
+    // WMDE: keep the connector's current value. Upstream raises it to the top of the range, and
+    // a changed max_requested_bpc makes the kernel do a full modeset at the same mode: on amdgpu
+    // (8 by default, range 8-16) the first greeter commit resynced the monitor.
+    let max_bpc = drm_helpers::get_max_bpc(drm, conn)?.map(|(val, _range)| val);
     let Some(mode) = conn_info
         .modes()
         .iter()
