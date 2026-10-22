@@ -190,27 +190,31 @@ fn render_input_order_internal<R: 'static>(
         callback(Stage::ZoomUI)?;
     }
 
-    // WMDE: the window switcher owns the output it shows on. Under it only the desktop: the
-    // Bottom layer (desktop icons) and the wallpaper, without windows, panels, overlays and
-    // popups, and regardless of a fullscreen window, which otherwise hides the wallpaper.
-    // Below the lock check on purpose: under a lock it is neither drawn nor hit.
+    // WMDE: the window switcher, on top. The grid owns the output it shows on: under it only
+    // the desktop, the Bottom layer (desktop icons) and the wallpaper, without windows, panels,
+    // overlays and popups, and regardless of a fullscreen window, which otherwise hides the
+    // wallpaper. The panel of the Icons and List styles lies over everything as it is. Either
+    // way nothing under it is hit (`Stage::Switcher` in `src/input/mod.rs`). Below the lock check
+    // on purpose: under a lock it is neither drawn nor hit.
     if let Some(switcher) = shell.switcher_on(output) {
         callback(Stage::Switcher(switcher))?;
-        for (layer, location) in layer_surfaces(output, Layer::Bottom, element_filter) {
-            callback(Stage::LayerSurface {
-                layer,
-                location,
-                workspace_idx: current.1,
-            })?;
+        if switcher.hides_windows() {
+            for (layer, location) in layer_surfaces(output, Layer::Bottom, element_filter) {
+                callback(Stage::LayerSurface {
+                    layer,
+                    location,
+                    workspace_idx: current.1,
+                })?;
+            }
+            for (layer, location) in layer_surfaces(output, Layer::Background, element_filter) {
+                callback(Stage::LayerSurface {
+                    layer,
+                    location,
+                    workspace_idx: current.1,
+                })?;
+            }
+            return ControlFlow::Continue(());
         }
-        for (layer, location) in layer_surfaces(output, Layer::Background, element_filter) {
-            callback(Stage::LayerSurface {
-                layer,
-                location,
-                workspace_idx: current.1,
-            })?;
-        }
-        return ControlFlow::Continue(());
     }
 
     // Overlay-level layer shell

@@ -34,6 +34,27 @@ pub const PAD: i32 = 4;
 /// The grid stops shrinking here and overflows instead.
 pub const MIN_THUMB: i32 = 48;
 
+/// The Icons and List looks draw a panel of the theme, framed like the compositor's menu: this
+/// frame, `menu::RADIUS` corners.
+pub const PANEL_BORDER: i32 = 1;
+/// Icons look: the icon, the tile around it (the selection fills the tile) and the gap between
+/// tiles, at most `ICON_COLUMNS` tiles to a row as in the classic Windows switcher.
+pub const ICON: i32 = 48;
+pub const TILE: i32 = 64;
+pub const TILE_GAP: i32 = 8;
+pub const ICON_COLUMNS: usize = 7;
+/// Between the Icons panel's edge and its tiles.
+pub const PANEL_PAD: i32 = 16;
+/// The title line under the tiles, the gap above it, and the narrowest it gets, so that one
+/// or two windows still leave room for a title.
+pub const CAPTION: i32 = 28;
+pub const CAPTION_GAP: i32 = 8;
+pub const MIN_CAPTION_WIDTH: i32 = 320;
+/// List look: the panel width, a row and its icon.
+pub const LIST_WIDTH: i32 = 480;
+pub const ROW: i32 = 40;
+pub const ROW_ICON: i32 = 32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridParams {
     /// Starting thumbnail height.
@@ -78,6 +99,10 @@ pub struct Cell {
 pub struct GridLayout {
     pub cells: Vec<Cell>,
     pub rows: usize,
+    /// The panel of the Icons and List looks; the grid has none.
+    pub panel: Option<Rectangle<i32, Logical>>,
+    /// The line of the Icons look that carries the selected window's title.
+    pub caption: Option<Rectangle<i32, Logical>>,
 }
 
 /// Cells for windows of the given aspects (width / height), in that order, on an output of
@@ -179,6 +204,7 @@ fn place(
     GridLayout {
         cells,
         rows: rows.len(),
+        ..GridLayout::default()
     }
 }
 
@@ -261,6 +287,137 @@ pub fn close_at(layout: &GridLayout, point: Point<f64, Logical>) -> Option<usize
             && point.x < b.loc.x + b.size.w
             && point.y < b.loc.y + b.size.h
     })
+}
+
+/// Whether `point` (output-local) is on the panel of the Icons or List look.
+pub fn in_panel(layout: &GridLayout, point: Point<f64, Logical>) -> bool {
+    layout.panel.is_some_and(|p| {
+        let p = p.to_f64();
+        point.x >= p.loc.x
+            && point.y >= p.loc.y
+            && point.x < p.loc.x + p.size.w
+            && point.y < p.loc.y + p.size.h
+    })
+}
+
+/// The Icons look for `n` windows on an output of `area`: tiles in rows of at most
+/// `ICON_COLUMNS` and no wider than the grid's widest row, filled from the left, with the title
+/// line under them; the block of tiles is centred over the title line, the panel on the output.
+/// A tile is the cell's frame and picture; it has no header, so no close button either.
+pub fn icons_layout(area: Size<i32, Logical>, n: usize) -> GridLayout {
+    if n == 0 {
+        return GridLayout::default();
+    }
+    let max_w = (area.w as f64 * MAX_WIDTH_SHARE).round() as i32;
+    let fit = ((max_w - 2 * PANEL_PAD + TILE_GAP) / (TILE + TILE_GAP)).max(1) as usize;
+    let columns = n.min(ICON_COLUMNS).min(fit);
+    let rows = n.div_ceil(columns);
+    let tiles = Size::<i32, Logical>::from((
+        columns as i32 * (TILE + TILE_GAP) - TILE_GAP,
+        rows as i32 * (TILE + TILE_GAP) - TILE_GAP,
+    ));
+    // Tiles are an even width, so the block centres on whole pixels.
+    let content_w = tiles.w.max(MIN_CAPTION_WIDTH);
+    let size = Size::from((
+        content_w + 2 * PANEL_PAD,
+        tiles.h + CAPTION_GAP + CAPTION + 2 * PANEL_PAD,
+    ));
+    let panel = Rectangle::new(
+        Point::from(((area.w - size.w) / 2, (area.h - size.h) / 2)),
+        size,
+    );
+    let origin = panel.loc + Point::from((PANEL_PAD + (content_w - tiles.w) / 2, PANEL_PAD));
+    let cells = (0..n)
+        .map(|i| {
+            let (row, column) = (i / columns, i % columns);
+            let tile = Rectangle::new(
+                origin
+                    + Point::from((
+                        column as i32 * (TILE + TILE_GAP),
+                        row as i32 * (TILE + TILE_GAP),
+                    )),
+                Size::from((TILE, TILE)),
+            );
+            Cell {
+                frame: tile,
+                header: Rectangle::default(),
+                thumb: tile,
+                row,
+            }
+        })
+        .collect();
+    let caption = Rectangle::new(
+        panel.loc + Point::from((PANEL_PAD, PANEL_PAD + tiles.h + CAPTION_GAP)),
+        Size::from((content_w, CAPTION)),
+    );
+    GridLayout {
+        cells,
+        rows,
+        panel: Some(panel),
+        caption: Some(caption),
+    }
+}
+
+/// How many rows of the List look fit an output of `area`, out of `n`.
+pub fn list_visible(area: Size<i32, Logical>, n: usize) -> usize {
+    let max_h = (area.h as f64 * MAX_HEIGHT_SHARE).round() as i32;
+    (((max_h - 2 * PANEL_BORDER) / ROW).max(1) as usize).min(n)
+}
+
+/// The first row shown so that `selected` is in view, moving the window of `visible` rows as
+/// little as it takes.
+pub fn list_first(n: usize, visible: usize, first: usize, selected: usize) -> usize {
+    let first = if selected < first {
+        selected
+    } else if selected >= first + visible {
+        selected + 1 - visible
+    } else {
+        first
+    };
+    first.min(n.saturating_sub(visible))
+}
+
+/// The List look for `n` windows on an output of `area`, rows `first..` in view: rows end to end
+/// inside the panel frame, each its own grid row, so the arrows go up and down the list. A row
+/// out of view has an empty frame and is neither drawn nor hit. The header is the whole row, and
+/// the close button the square at its right end.
+pub fn list_layout(area: Size<i32, Logical>, n: usize, first: usize) -> GridLayout {
+    if n == 0 {
+        return GridLayout::default();
+    }
+    let visible = list_visible(area, n);
+    let first = first.min(n - visible);
+    let width = LIST_WIDTH.min((area.w as f64 * MAX_WIDTH_SHARE).round() as i32);
+    let size = Size::from((width, visible as i32 * ROW + 2 * PANEL_BORDER));
+    let panel = Rectangle::new(
+        Point::from(((area.w - size.w) / 2, (area.h - size.h) / 2)),
+        size,
+    );
+    let cells = (0..n)
+        .map(|i| {
+            let frame = if (first..first + visible).contains(&i) {
+                Rectangle::new(
+                    panel.loc
+                        + Point::from((PANEL_BORDER, PANEL_BORDER + (i - first) as i32 * ROW)),
+                    Size::from((width - 2 * PANEL_BORDER, ROW)),
+                )
+            } else {
+                Rectangle::default()
+            };
+            Cell {
+                frame,
+                header: frame,
+                thumb: frame,
+                row: i,
+            }
+        })
+        .collect();
+    GridLayout {
+        cells,
+        rows: n,
+        panel: Some(panel),
+        caption: None,
+    }
 }
 
 /// What has to stay held for the switcher to stay open: the binding's modifiers less Shift,
@@ -762,5 +919,135 @@ mod tests {
                 rect(0, 0, 800, 600)
             ]
         );
+    }
+
+    fn overlaps(a: Rectangle<i32, Logical>, b: Rectangle<i32, Logical>) -> bool {
+        a.loc.x < b.loc.x + b.size.w
+            && b.loc.x < a.loc.x + a.size.w
+            && a.loc.y < b.loc.y + b.size.h
+            && b.loc.y < a.loc.y + a.size.h
+    }
+
+    #[test]
+    fn icons_sit_on_a_centred_panel_with_the_title_under_them() {
+        let l = icons_layout(fhd(), 3);
+        let panel = l.panel.unwrap();
+        // Three tiles are narrower than the title line, which sets the width.
+        assert_eq!(panel.size.w, MIN_CAPTION_WIDTH + 2 * PANEL_PAD);
+        assert_eq!(panel.loc.x, (1920 - panel.size.w) / 2);
+        assert_eq!(panel.loc.y, (1080 - panel.size.h) / 2);
+        assert_eq!(l.rows, 1);
+        // The block of tiles is centred over the title line.
+        let tiles_w = 3 * TILE + 2 * TILE_GAP;
+        assert_eq!(
+            l.cells[0].frame.loc.x,
+            panel.loc.x + PANEL_PAD + (MIN_CAPTION_WIDTH - tiles_w) / 2
+        );
+        let caption = l.caption.unwrap();
+        assert_eq!(caption.loc.y, l.cells[0].frame.loc.y + TILE + CAPTION_GAP);
+        assert_eq!(
+            caption.loc.y + CAPTION + PANEL_PAD,
+            panel.loc.y + panel.size.h
+        );
+        for c in &l.cells {
+            assert_eq!(c.frame.size, Size::from((TILE, TILE)));
+            // No header, so no close button to hit.
+            assert_eq!(close_button(c).size, Size::default());
+        }
+    }
+
+    #[test]
+    fn icons_wrap_after_seven_and_never_overlap() {
+        let l = icons_layout(fhd(), 10);
+        assert_eq!(l.rows, 2);
+        assert_eq!(l.cells[6].row, 0);
+        assert_eq!(l.cells[7].row, 1);
+        // The second row starts under the first tile, filled from the left.
+        assert_eq!(l.cells[7].frame.loc.x, l.cells[0].frame.loc.x);
+        assert_eq!(
+            l.cells[7].frame.loc.y,
+            l.cells[0].frame.loc.y + TILE + TILE_GAP
+        );
+        for (i, a) in l.cells.iter().enumerate() {
+            assert!(l.panel.unwrap().contains_rect(a.frame));
+            for b in &l.cells[i + 1..] {
+                assert!(!overlaps(a.frame, b.frame));
+            }
+        }
+        // Down from the second tile lands on the tile under it.
+        assert_eq!(neighbour(&l, 1, Dir::Down), 8);
+        assert_eq!(neighbour(&l, 8, Dir::Up), 1);
+    }
+
+    #[test]
+    fn icons_rows_stay_within_a_narrow_output() {
+        let narrow = Size::from((400, 800));
+        let l = icons_layout(narrow, 7);
+        // 0.9 * 400 = 360 takes four tiles and the panel's padding.
+        assert_eq!(l.cells.iter().filter(|c| c.row == 0).count(), 4);
+        assert!(l.panel.unwrap().size.w <= 400);
+    }
+
+    #[test]
+    fn list_rows_run_end_to_end_with_the_close_button_at_the_right() {
+        let l = list_layout(fhd(), 5, 0);
+        let panel = l.panel.unwrap();
+        assert_eq!(
+            panel.size,
+            Size::from((LIST_WIDTH, 5 * ROW + 2 * PANEL_BORDER))
+        );
+        assert_eq!(panel.loc.x, (1920 - LIST_WIDTH) / 2);
+        for (i, c) in l.cells.iter().enumerate() {
+            assert_eq!(c.row, i);
+            assert_eq!(c.frame.loc.y, panel.loc.y + PANEL_BORDER + i as i32 * ROW);
+            assert_eq!(
+                c.frame.size,
+                Size::from((LIST_WIDTH - 2 * PANEL_BORDER, ROW))
+            );
+            let close = close_button(c);
+            assert_eq!(close.size, Size::from((ROW, ROW)));
+            assert_eq!(close.loc.x + ROW, c.frame.loc.x + c.frame.size.w);
+        }
+        assert_eq!(neighbour(&l, 3, Dir::Up), 2);
+        assert_eq!(neighbour(&l, 3, Dir::Down), 4);
+        assert_eq!(neighbour(&l, 4, Dir::Down), 4);
+        assert_eq!(neighbour(&l, 0, Dir::Up), 0);
+    }
+
+    #[test]
+    fn a_long_list_shows_a_window_of_rows_around_the_selection() {
+        let visible = list_visible(fhd(), 30);
+        // 0.7 * 1080 = 756, less the frame, in rows of 40.
+        assert_eq!(visible, 18);
+        assert_eq!(list_first(30, visible, 0, 5), 0);
+        assert_eq!(list_first(30, visible, 0, 25), 8);
+        assert_eq!(list_first(30, visible, 8, 3), 3);
+        assert_eq!(list_first(30, visible, 3, 29), 12);
+
+        let l = list_layout(fhd(), 30, 12);
+        let shown = l
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.frame.size.w > 0)
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        assert_eq!(shown, (12..30).collect::<Vec<_>>());
+        // A row out of view is neither hit nor closed.
+        assert_eq!(cell_at(&l, Point::from((0.0, 0.0))), None);
+        let top = l.cells[12].frame;
+        assert_eq!(top.loc.y, l.panel.unwrap().loc.y + PANEL_BORDER);
+        assert_eq!(cell_at(&l, top.loc.to_f64()), Some(12));
+        // Up from the top row in view goes to the row above it, which scrolls.
+        assert_eq!(neighbour(&l, 12, Dir::Up), 11);
+    }
+
+    #[test]
+    fn a_click_on_the_panel_is_not_a_click_outside() {
+        let l = icons_layout(fhd(), 2);
+        let panel = l.panel.unwrap();
+        assert!(in_panel(&l, (panel.loc + Point::from((2, 2))).to_f64()));
+        assert!(!in_panel(&l, Point::from((0.0, 0.0))));
+        assert!(!in_panel(&layout(3).1, Point::from((960.0, 540.0))));
     }
 }

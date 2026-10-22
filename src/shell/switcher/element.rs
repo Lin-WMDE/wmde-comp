@@ -20,7 +20,10 @@ use crate::{
     },
 };
 
-use super::layout::{HEADER, HEADER_GAP, PAD};
+use super::layout::{
+    CAPTION, CAPTION_GAP, HEADER, HEADER_GAP, ICON, PAD, PANEL_BORDER, PANEL_PAD, ROW, ROW_ICON,
+    TILE, TILE_GAP,
+};
 
 use calloop::LoopHandle;
 use cosmic::{
@@ -36,7 +39,7 @@ use cosmic::{
     theme,
     widget::{
         icon::{IconFallback, from_name},
-        text,
+        menu, text,
     },
 };
 use smithay::{
@@ -253,6 +256,306 @@ impl Program for CellProgram {
             shadow: Default::default(),
         }))
         .into()
+    }
+}
+
+/// What the panel of the Icons and List looks shows of one window.
+#[derive(Debug, Clone)]
+pub struct PanelEntry {
+    pub app_id: String,
+    pub title: String,
+}
+
+/// How a panel lays out its windows, with the numbers `layout::icons_layout` and
+/// `layout::list_layout` worked out, so the drawing and the hit testing agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelLook {
+    /// Tiles `columns` to a row, centred over a title line `content_w` wide.
+    Icons { columns: usize, content_w: i32 },
+    /// `visible` rows, from the first shown.
+    List { visible: usize },
+}
+
+/// The whole panel of the Icons or List look as one element, framed like the compositor's
+/// window menu (`grabs::menu`): a surface of the theme, never translucent.
+#[derive(Debug, Clone)]
+pub struct SwitcherPanel {
+    elem: IcedElement<PanelProgram>,
+}
+
+impl SwitcherPanel {
+    pub fn new(
+        evlh: LoopHandle<'static, crate::state::State>,
+        mut theme: cosmic::Theme,
+        look: PanelLook,
+        entries: Vec<PanelEntry>,
+        selected: usize,
+        first: usize,
+        size: Size<i32, Logical>,
+    ) -> SwitcherPanel {
+        // Opaque: no blur of its own under it.
+        theme.transparent = false;
+        SwitcherPanel {
+            elem: IcedElement::new(
+                PanelProgram {
+                    look,
+                    entries,
+                    selected,
+                    first,
+                    size: (size.w as f32, size.h as f32),
+                },
+                size,
+                evlh,
+                theme,
+            ),
+        }
+    }
+
+    /// As `SwitcherCell::send`: only from the main thread.
+    fn send(&self, message: PanelMessage) {
+        self.elem.queue_message(message);
+        self.elem.force_update();
+        self.elem.force_redraw();
+    }
+
+    pub fn set_selected(&self, selected: usize) {
+        if self.elem.with_program(|p| p.selected) != selected {
+            self.send(PanelMessage::Selected(selected));
+        }
+    }
+
+    pub fn set_first(&self, first: usize) {
+        if self.elem.with_program(|p| p.first) != first {
+            self.send(PanelMessage::First(first));
+        }
+    }
+
+    pub fn has_title(&self, index: usize, title: &str) -> bool {
+        self.elem
+            .with_program(|p| p.entries.get(index).is_none_or(|e| e.title == title))
+    }
+
+    pub fn set_title(&self, index: usize, title: &str) {
+        if !self.has_title(index, title) {
+            self.send(PanelMessage::Title(index, title.to_string()));
+        }
+    }
+
+    pub fn output_enter(&self, output: &Output) {
+        self.elem
+            .output_enter(output, Rectangle::default() /*unused*/);
+    }
+
+    pub fn push_render_elements<R>(
+        &self,
+        renderer: &mut R,
+        location: Point<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+        push: &mut dyn FnMut(IcedRenderElement<R>),
+    ) where
+        R: AsGlowRenderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        self.elem
+            .push_render_elements(renderer, location, scale, alpha, [0; 4], push, None);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PanelMessage {
+    Selected(usize),
+    Title(usize, String),
+    First(usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct PanelProgram {
+    look: PanelLook,
+    entries: Vec<PanelEntry>,
+    selected: usize,
+    /// The first row the List look shows.
+    first: usize,
+    size: (f32, f32),
+}
+
+fn app_icon(app_id: &str, size: i32) -> cosmic::Element<'static, PanelMessage> {
+    let mut icon = from_name(app_id.to_string()).size(size as u16);
+    icon.fallback = Some(IconFallback::Names(vec!["application-x-executable".into()]));
+    icon.icon().into()
+}
+
+fn title_text(title: &str) -> cosmic::widget::Text<'_, cosmic::Theme, cosmic::Renderer> {
+    text::body(title)
+        .wrapping(Wrapping::None)
+        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
+}
+
+impl PanelProgram {
+    /// A tile of the Icons look. The selected one is tinted like a selected icon on the desktop
+    /// and in Files (`icon_selection_colors` there): accent at 30 % and a solid accent line.
+    fn tile(&self, index: usize, entry: &PanelEntry) -> cosmic::Element<'_, PanelMessage> {
+        let selected = index == self.selected;
+        app_icon(&entry.app_id, ICON)
+            .apply(container)
+            .center(Length::Fixed(TILE as f32))
+            .class(theme::Container::custom(move |theme| {
+                let mut style = container::Style {
+                    snap: true,
+                    ..Default::default()
+                };
+                if selected {
+                    let cosmic = theme.cosmic();
+                    let accent = if cosmic.is_dark {
+                        Color::from(cosmic.accent_text_color())
+                    } else {
+                        Color::from(cosmic.accent_color())
+                    };
+                    style.background = Some(Color { a: 0.30, ..accent }.into());
+                    style.border = Border {
+                        radius: 0.0.into(),
+                        width: 1.0,
+                        color: accent,
+                    };
+                }
+                style
+            }))
+            .into()
+    }
+
+    /// A row of the List look: icon, title and, on the selected row, the close glyph in a
+    /// row-high square at the right end, where `layout::close_button` hits it. Every row keeps
+    /// the square, so the title keeps its width. The selected row is filled like a hovered menu
+    /// item, from frame to frame.
+    fn row<'a>(&'a self, index: usize, entry: &'a PanelEntry) -> cosmic::Element<'a, PanelMessage> {
+        let selected = index == self.selected;
+        let close: cosmic::Element<'_, PanelMessage> = if selected {
+            from_name("window-close-symbolic")
+                .size(CLOSE_ICON)
+                .prefer_svg(true)
+                .icon()
+                .apply(container)
+                .center(Length::Fixed(ROW as f32))
+                .into()
+        } else {
+            space::horizontal().width(ROW as f32).into()
+        };
+        row(vec![
+            app_icon(&entry.app_id, ROW_ICON),
+            space::horizontal().width(ICON_GAP).into(),
+            title_text(&entry.title).width(Length::Fill).into(),
+            close,
+        ])
+        .align_y(Alignment::Center)
+        .height(Length::Fixed(ROW as f32))
+        .padding([0, 0, 0, menu::ITEM_PADDING])
+        .apply(container)
+        .width(Length::Fill)
+        .class(theme::Container::custom(move |theme| container::Style {
+            snap: true,
+            background: selected
+                .then(|| Color::from(theme.cosmic().background(false).component.hover).into()),
+            ..Default::default()
+        }))
+        .into()
+    }
+}
+
+impl Program for PanelProgram {
+    type Message = PanelMessage;
+
+    fn update(
+        &mut self,
+        message: Self::Message,
+        _loop_handle: &LoopHandle<'static, crate::state::State>,
+        _last_seat: Option<&(
+            smithay::input::Seat<crate::state::State>,
+            smithay::utils::Serial,
+        )>,
+    ) -> cosmic::iced::Task<Self::Message> {
+        match message {
+            PanelMessage::Selected(selected) => self.selected = selected,
+            PanelMessage::Title(index, title) => {
+                if let Some(entry) = self.entries.get_mut(index) {
+                    entry.title = title;
+                }
+            }
+            PanelMessage::First(first) => self.first = first,
+        }
+        cosmic::iced::Task::none()
+    }
+
+    fn view(&self) -> cosmic::Element<'_, Self::Message> {
+        let content: cosmic::Element<'_, PanelMessage> = match self.look {
+            PanelLook::Icons { columns, content_w } => {
+                let rows = self
+                    .entries
+                    .chunks(columns.max(1))
+                    .enumerate()
+                    .map(|(r, chunk)| {
+                        row(chunk
+                            .iter()
+                            .enumerate()
+                            .map(|(c, entry)| self.tile(r * columns + c, entry))
+                            .collect::<Vec<_>>())
+                        .spacing(TILE_GAP as f32)
+                        .into()
+                    })
+                    .collect::<Vec<_>>();
+                let title = self
+                    .entries
+                    .get(self.selected)
+                    .map_or("", |e| e.title.as_str());
+                column(vec![
+                    column(rows)
+                        .spacing(TILE_GAP as f32)
+                        .apply(container)
+                        .center_x(Length::Fixed(content_w as f32))
+                        .into(),
+                    title_text(title)
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center)
+                        .width(Length::Fixed(content_w as f32))
+                        .height(Length::Fixed(CAPTION as f32))
+                        .into(),
+                ])
+                .spacing(CAPTION_GAP as f32)
+                .padding(PANEL_PAD as u16)
+                .into()
+            }
+            PanelLook::List { visible } => column(
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .skip(self.first)
+                    .take(visible)
+                    .map(|(i, entry)| self.row(i, entry))
+                    .collect::<Vec<_>>(),
+            )
+            .padding(PANEL_BORDER as u16)
+            .into(),
+        };
+
+        content
+            .apply(container)
+            .width(Length::Fixed(self.size.0))
+            .height(Length::Fixed(self.size.1))
+            .class(theme::Container::custom(|theme| {
+                let component = &theme.cosmic().background(false).component;
+                container::Style {
+                    snap: true,
+                    icon_color: Some(component.on.into()),
+                    text_color: Some(component.on.into()),
+                    background: Some(Color::from(component.base).into()),
+                    border: Border {
+                        radius: menu::RADIUS.into(),
+                        width: PANEL_BORDER as f32,
+                        color: component.divider.into(),
+                    },
+                    shadow: Default::default(),
+                }
+            }))
+            .into()
     }
 }
 

@@ -28,6 +28,10 @@
 //! (minimized ones fade in), and closing moves them back, the picked one on top. Picking a
 //! minimized window skips the closing half: the window has its own restore animation.
 //!
+//! The `Icons` and `List` styles draw a panel of the theme instead, over the desktop as it is,
+//! with no thumbnails, dimming or blur: tiles of window icons with the selected title under
+//! them, or rows of icon and title. With `animate` the panel fades in and out.
+//!
 //! The `None` style keeps the switcher off the screen: each press focuses the next window right
 //! away (`Shell::cycle_window`).
 
@@ -85,7 +89,7 @@ use crate::{
 
 pub use self::element::SwitcherElement;
 use self::{
-    element::SwitcherCell,
+    element::{PanelEntry, PanelLook, SwitcherCell, SwitcherPanel},
     grab::SwitcherGrab,
     layout::{Dir, FamilyShape, GridLayout, GridParams},
 };
@@ -127,6 +131,8 @@ pub struct Session {
     generation: u64,
     seat: Seat<State>,
     output: Output,
+    /// `Grid`, `Icons` or `List`; `None` never opens a session.
+    style: WindowSwitcherStyle,
     entries: Vec<FocusTarget>,
     /// The windows behind each entry, whose modal dialog it is, top-first: the one right under
     /// the dialog first, the root last. The cell draws them under the dialog and is named after
@@ -145,6 +151,8 @@ pub struct Session {
     /// animation starts and ends at the bounds of one that is on screen.
     shapes: Vec<FamilyShape>,
     opened: Option<Instant>,
+    /// The first row the List style shows, moved to keep the selection in view.
+    first: usize,
     /// Set once the session ended and only its closing animation runs, with the picked entry.
     closing: Option<(Instant, Option<usize>)>,
     blur: Mutex<BlurState>,
@@ -153,7 +161,39 @@ pub struct Session {
 
 struct View {
     layout: GridLayout,
+    /// A cell per entry for the grid; empty with a panel.
     cells: Vec<SwitcherCell>,
+    /// The whole switcher of the Icons and List styles.
+    panel: Option<SwitcherPanel>,
+}
+
+impl View {
+    fn set_selected(&self, index: usize) {
+        for (i, cell) in self.cells.iter().enumerate() {
+            cell.set_selected(i == index);
+        }
+        if let Some(panel) = &self.panel {
+            panel.set_selected(index);
+        }
+    }
+
+    fn has_title(&self, index: usize, title: &str) -> bool {
+        match &self.panel {
+            Some(panel) => panel.has_title(index, title),
+            None => self.cells.get(index).is_none_or(|c| c.has_title(title)),
+        }
+    }
+
+    fn set_title(&self, index: usize, title: &str) {
+        match &self.panel {
+            Some(panel) => panel.set_title(index, title),
+            None => {
+                if let Some(cell) = self.cells.get(index) {
+                    cell.set_title(title);
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Session {
@@ -352,7 +392,17 @@ impl Session {
             || (self.animate && self.opened.is_some_and(|o| o.elapsed() < OPEN_DURATION))
     }
 
+    /// Whether the switcher owns its output: the grid draws the desktop without windows under
+    /// it; a panel lies over the desktop as it is.
+    pub fn hides_windows(&self) -> bool {
+        self.style == WindowSwitcherStyle::Grid
+    }
+
     fn build_view(&mut self, evlh: LoopHandle<'static, State>, theme: cosmic::Theme) {
+        if self.style != WindowSwitcherStyle::Grid {
+            self.build_panel(evlh, theme);
+            return;
+        }
         let area = self.output.geometry().size.as_logical();
         let aspects = self
             .entries
@@ -386,7 +436,65 @@ impl Session {
                 elem
             })
             .collect();
-        self.view = Some(View { layout, cells });
+        self.view = Some(View {
+            layout,
+            cells,
+            panel: None,
+        });
+    }
+
+    /// The layout of the Icons or List style for the current entries and `first`.
+    fn panel_layout(&self) -> GridLayout {
+        let area = self.output.geometry().size.as_logical();
+        match self.style {
+            WindowSwitcherStyle::List => layout::list_layout(area, self.entries.len(), self.first),
+            _ => layout::icons_layout(area, self.entries.len()),
+        }
+    }
+
+    fn build_panel(&mut self, evlh: LoopHandle<'static, State>, theme: cosmic::Theme) {
+        let area = self.output.geometry().size.as_logical();
+        let visible = layout::list_visible(area, self.entries.len());
+        self.first = layout::list_first(self.entries.len(), visible, self.first, self.selected);
+        let layout = self.panel_layout();
+        let Some(panel_rect) = layout.panel else {
+            self.view = None;
+            return;
+        };
+        let look = match self.style {
+            WindowSwitcherStyle::List => PanelLook::List { visible },
+            _ => PanelLook::Icons {
+                columns: layout.cells.iter().filter(|c| c.row == 0).count(),
+                content_w: layout.caption.map_or(0, |c| c.size.w),
+            },
+        };
+        let entries = self
+            .entries
+            .iter()
+            .zip(&self.families)
+            .map(|(target, family)| {
+                let surface = surface_of(root_of(target, family));
+                PanelEntry {
+                    app_id: surface.app_id(),
+                    title: surface.title(),
+                }
+            })
+            .collect();
+        let panel = SwitcherPanel::new(
+            evlh,
+            theme,
+            look,
+            entries,
+            self.selected,
+            self.first,
+            panel_rect.size,
+        );
+        panel.output_enter(&self.output);
+        self.view = Some(View {
+            layout,
+            cells: Vec::new(),
+            panel: Some(panel),
+        });
     }
 
     fn select(&mut self, index: usize) {
@@ -394,10 +502,24 @@ impl Session {
             return;
         }
         self.selected = index;
-        if let Some(view) = &self.view {
-            for (i, cell) in view.cells.iter().enumerate() {
-                cell.set_selected(i == index);
+        // The List style scrolls to keep the selection in view.
+        if self.style == WindowSwitcherStyle::List && self.view.is_some() {
+            let area = self.output.geometry().size.as_logical();
+            let visible = layout::list_visible(area, self.entries.len());
+            let first = layout::list_first(self.entries.len(), visible, self.first, index);
+            if first != self.first {
+                self.first = first;
+                let layout = self.panel_layout();
+                if let Some(view) = &mut self.view {
+                    view.layout = layout;
+                    if let Some(panel) = &view.panel {
+                        panel.set_first(first);
+                    }
+                }
             }
+        }
+        if let Some(view) = &self.view {
+            view.set_selected(index);
         }
     }
 
@@ -415,6 +537,19 @@ impl Session {
         let area = self.output.geometry().size.as_logical();
         let open = self.openness();
         let eased: f64 = ease(EaseInOutCubic, 0.0, 1.0, open);
+
+        // A panel is one element that fades in and out; the desktop under it is drawn as usual.
+        if let (Some(panel), Some(rect)) = (view.panel.as_ref(), view.layout.panel) {
+            panel.push_render_elements(
+                renderer,
+                rect.loc.to_physical_precise_round(scale),
+                scale.into(),
+                eased as f32,
+                &mut |e| push(SwitcherElement::Iced(e)),
+            );
+            return;
+        }
+
         // Titles and frames come in over the second half and go over the first.
         let chrome = ((open - 0.5) * 2.0).clamp(0.0, 1.0) as f32;
 
@@ -512,7 +647,8 @@ impl Shell {
             .switcher
             .as_ref()
             .filter(|s| s.visible)
-            .or(self.switcher_closing.as_ref())?;
+            .or(self.switcher_closing.as_ref())
+            .filter(|s| s.hides_windows())?;
         session
             .shown()
             .any(|t| match t {
@@ -528,6 +664,7 @@ impl Shell {
     /// their thumbnails are on screen, instead of the throttled one.
     pub fn switcher_minimized_on(&self, output: &Output) -> Vec<CosmicSurface> {
         self.switcher_on(output)
+            .filter(|s| s.hides_windows())
             .map(|s| {
                 s.shown()
                     .filter(|t| t.is_minimized())
@@ -544,10 +681,7 @@ impl Shell {
             .as_ref()
             .filter(|s| s.visible)
             .and_then(|s| Some((s, s.view.as_ref()?)))
-            .is_some_and(|(s, view)| {
-                s.titles()
-                    .any(|(i, title)| view.cells.get(i).is_some_and(|c| !c.has_title(&title)))
-            })
+            .is_some_and(|(s, view)| s.titles().any(|(i, title)| !view.has_title(i, &title)))
     }
 
     /// Whether a shown window went away, listed or behind a dialog, and the session needs
@@ -638,6 +772,7 @@ impl State {
                 generation,
                 seat: seat.clone(),
                 output,
+                style: config.style,
                 entries,
                 families,
                 selected,
@@ -649,6 +784,7 @@ impl State {
                 view: None,
                 shapes: Vec::new(),
                 opened: None,
+                first: 0,
                 closing: None,
                 blur: Mutex::new(BlurState::default()),
                 dim: Id::new(),
@@ -683,11 +819,13 @@ impl State {
         let evlh = self.common.event_loop_handle.clone();
         let theme = self.common.theme.clone();
         let mut shell = self.common.shell.write();
+        // A panel moves no windows, so it needs no shapes.
         let shapes = match shell.switcher.as_ref() {
             Some(s) if s.generation == generation && !s.visible => s
                 .entries
                 .iter()
                 .zip(&s.families)
+                .filter(|_| s.hides_windows())
                 .map(|(t, family)| shape_of(&shell, &s.output, t, family))
                 .collect::<Vec<_>>(),
             _ => return,
@@ -872,6 +1010,20 @@ impl State {
         layout::cell_at(&session.view.as_ref()?.layout, local)
     }
 
+    /// Whether `location` (global) is on the panel of the Icons or List style, for the grab.
+    fn switcher_in_panel(&self, generation: u64, location: Point<f64, Logical>) -> bool {
+        let shell = self.common.shell.read();
+        shell
+            .switcher
+            .as_ref()
+            .filter(|s| s.generation == generation && s.visible)
+            .and_then(|s| {
+                let local = location - s.output.geometry().loc.as_logical().to_f64();
+                Some(layout::in_panel(&s.view.as_ref()?.layout, local))
+            })
+            .unwrap_or(false)
+    }
+
     /// Gives the cells the titles their windows carry now. Only from the main thread, never from
     /// the render: updating a cell queues its task on the executor of the calling thread, and
     /// dropping the cell on the main thread then aborts the compositor.
@@ -885,9 +1037,7 @@ impl State {
                 return;
             };
             for (i, title) in session.titles() {
-                if let Some(cell) = view.cells.get(i) {
-                    cell.set_title(&title);
-                }
+                view.set_title(i, &title);
             }
             session.output.clone()
         };

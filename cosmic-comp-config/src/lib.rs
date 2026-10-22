@@ -184,6 +184,10 @@ pub enum WindowSwitcherStyle {
     /// A grid of live window thumbnails over the blurred desktop.
     #[default]
     Grid,
+    /// A panel of window icons with the selected window's title under them, over the desktop.
+    Icons,
+    /// A panel listing the windows as rows of icon and title, over the desktop.
+    List,
     /// No switcher on screen: every press focuses the next window right away.
     None,
 }
@@ -514,11 +518,25 @@ mod test {
             }
         );
 
-        let none = WindowSwitcherConfig {
-            style: WindowSwitcherStyle::None,
-            ..WindowSwitcherConfig::default()
-        };
-        let text = ron::to_string(&none).unwrap();
-        assert_eq!(ron::from_str::<WindowSwitcherConfig>(&text).unwrap(), none);
+        for style in [
+            WindowSwitcherStyle::Icons,
+            WindowSwitcherStyle::List,
+            WindowSwitcherStyle::None,
+        ] {
+            let cfg = WindowSwitcherConfig {
+                style,
+                ..WindowSwitcherConfig::default()
+            };
+            let text = ron::to_string(&cfg).unwrap();
+            assert_eq!(ron::from_str::<WindowSwitcherConfig>(&text).unwrap(), cfg);
+        }
+        let cfg: WindowSwitcherConfig = ron::from_str("(style: List)").unwrap();
+        assert_eq!(
+            cfg,
+            WindowSwitcherConfig {
+                style: WindowSwitcherStyle::List,
+                ..WindowSwitcherConfig::default()
+            }
+        );
     }
 }

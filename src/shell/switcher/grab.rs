@@ -82,6 +82,10 @@ impl PointerGrab<State> for SwitcherGrab {
             return;
         }
         let pick = state.switcher_cell_at(self.generation, handle.current_location());
+        // On the panel of the Icons and List styles, a click between the cells does nothing.
+        if pick.is_none() && state.switcher_in_panel(self.generation, handle.current_location()) {
+            return;
+        }
         // The session cannot be finished from in here - that unsets this very grab through
         // the outer handle, which is locked - so the pick runs once the event is through.
         self.finishing = true;
