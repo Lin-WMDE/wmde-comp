@@ -393,7 +393,7 @@ fn title_text(title: &str) -> cosmic::widget::Text<'_, cosmic::Theme, cosmic::Re
 
 impl PanelProgram {
     /// A tile of the Icons look. The selected one is tinted like a selected icon on the desktop
-    /// and in Files (`icon_selection_colors` there): accent at 30 % and a solid accent line.
+    /// and in Files: the theme's `icon_selection` and the same colour solid as its line.
     fn tile(&self, index: usize, entry: &PanelEntry) -> cosmic::Element<'_, PanelMessage> {
         let selected = index == self.selected;
         app_icon(&entry.app_id, ICON)
@@ -405,17 +405,12 @@ impl PanelProgram {
                     ..Default::default()
                 };
                 if selected {
-                    let cosmic = theme.cosmic();
-                    let accent = if cosmic.is_dark {
-                        Color::from(cosmic.accent_text_color())
-                    } else {
-                        Color::from(cosmic.accent_color())
-                    };
-                    style.background = Some(Color { a: 0.30, ..accent }.into());
+                    let fill = Color::from(theme.cosmic().icon_selection);
+                    style.background = Some(fill.into());
                     style.border = Border {
                         radius: 0.0.into(),
                         width: 1.0,
-                        color: accent,
+                        color: Color { a: 1.0, ..fill },
                     };
                 }
                 style
